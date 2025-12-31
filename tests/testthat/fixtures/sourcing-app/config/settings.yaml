@@ -1,0 +1,20 @@
+app_title: "Data Processing Dashboard"
+version: "2.1.0"
+author: "Test Suite"
+
+data:
+  max_file_size_mb: 50
+  allowed_extensions:
+    - csv
+    - xlsx
+    - rds
+
+processing:
+  remove_outliers: true
+  outlier_multiplier: 1.5
+  normalize: true
+
+display:
+  theme: "flatly"
+  decimal_places: 2
+  date_format: "%Y-%m-%d"

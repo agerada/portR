@@ -1,0 +1,24 @@
+{
+  "R": {
+    "Version": "4.5.2",
+    "Repositories": [
+      {
+        "Name": "CRAN",
+        "URL": "https://cran.rstudio.com"
+      }
+    ]
+  },
+  "Packages": {
+    "shiny": {
+      "Package": "shiny",
+      "Version": "1.9.1",
+      "Source": "Repository",
+      "Repository": "CRAN"
+    },
+    "mylocalpackage": {
+      "Package": "mylocalpackage",
+      "Version": "0.1.0",
+      "Source": "Local"
+    }
+  }
+}
