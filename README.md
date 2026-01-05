@@ -14,18 +14,15 @@ The distributions can be run from USB drives, network shares, or any location wi
 ## Installation
 
 ```r
-# Install from GitHub (when available)
-# devtools::install_github("username/portR")
-
-# Or install locally
-devtools::install("path/to/portR")
+devtools::install_github("username/portR")
 ```
 
 ## Requirements
 
 ### Project Requirements
 
-Your R project must use **renv** for dependency management:
+Your R project must use **renv** for dependency management. If your project is
+already set up to use **renv**, then this section can be skipped. Otherwise:
 
 ```r
 # In your project
