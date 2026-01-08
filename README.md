@@ -90,11 +90,12 @@ build_windows(
 ```r
 build_mac(
   project_path = "path/to/your/project",
-  entry_script = "app.R",
+  entry_script = "app.R",  # Optional for multi-file apps
   r_version = "4.5.2",
   arch = "arm64",  # or "x86_64"
   extra_dirs = c("models", "data"),
-  create_zip = TRUE
+  create_zip = TRUE,
+  app_name = "MyShinyApp"
 )
 ```
 
@@ -105,7 +106,7 @@ build_mac(
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `project_path` | Path to project root with renv.lock | Required |
-| `entry_script` | Relative path to entry script (e.g., "app.R") | Required |
+| `entry_script` | Relative path to entry script (e.g., "app.R") | `NULL` (auto-detect) |
 | `output_dir` | Where to create distribution | `"dist"` in project |
 | `r_version` | Target R version | `"4.5.2"` |
 | `r_version_minor` | R major.minor for package repo | Derived from `r_version` |
@@ -121,6 +122,7 @@ build_mac(
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `arch` | Target architecture: "arm64" or "x86_64" | System architecture |
+| `app_name` | Name of the macOS application bundle (without .app) | `"ShinyApp"` |
 
 ## Output Structure
 
@@ -139,16 +141,22 @@ dist/
 
 ### macOS Distribution
 
+Creates a macOS application bundle (.app) that can be copied to `/Applications/` and run like any other macOS app:
+
 ```
 dist/
-├── R/                    # R framework
-│   └── R.framework/
-├── library/              # R packages
-├── app/                  # Application files
-├── app.R                 # Entry script
-├── models/               # Extra directories
-├── run_app.sh            # Shell script launcher
-└── Run Application.command  # Double-click launcher
+└── ShinyApp.app/         # macOS application bundle
+    └── Contents/
+        ├── Info.plist    # App metadata
+        ├── MacOS/
+        │   └── ShinyApp  # Executable launcher
+        ├── Frameworks/
+        │   └── R.framework/  # Embedded R runtime
+        └── Resources/
+            ├── app/      # Application files
+            │   ├── app.R # Entry script
+            │   └── models/  # Extra directories
+            └── library/  # R packages
 ```
 
 ## Local Packages

@@ -6,7 +6,7 @@
 \usage{
 build_mac(
   project_path,
-  entry_script,
+  entry_script = NULL,
   output_dir = NULL,
   r_version = "4.5.2",
   r_version_minor = NULL,
@@ -16,7 +16,8 @@ build_mac(
   create_zip = FALSE,
   zip_name = "portable_app_macos.zip",
   shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
-  clean_on_error = TRUE
+  clean_on_error = TRUE,
+  app_name = "ShinyApp"
 )
 }
 \arguments{
@@ -24,7 +25,8 @@ build_mac(
 valid renv.lock file.}
 
 \item{entry_script}{Relative path to the entry script from project root
-(e.g., "app.R" or "run.R").}
+(e.g., "app.R" or "run.R"). For multi-file Shiny apps, this can be NULL
+if ui.R and server.R are in the project root or app/ subdirectory.}
 
 \item{output_dir}{Directory where the distribution will be created.
 Defaults to "dist" in the project root.}
@@ -52,6 +54,9 @@ system architecture.}
 "shiny::runApp('app', launch.browser=TRUE)".}
 
 \item{clean_on_error}{Whether to clean up on error.}
+
+\item{app_name}{Name of the macOS application bundle (without .app extension).
+Defaults to "ShinyApp".}
 }
 \value{
 Invisibly returns the path to the distribution directory.
@@ -62,15 +67,13 @@ can run with minimal setup. The distribution includes R, all required
 packages, and a shell script launcher.
 }
 \details{
-This function:
-\enumerate{
-\item Validates renv status in the project
-\item Downloads R for macOS (as .pkg)
-\item Extracts R using pkgutil/hdiutil
-\item Downloads macOS binary packages from CRAN
-\item Copies app files and local packages
-\item Creates a launcher shell script
-\item Optionally creates a zip archive
+This function creates a macOS application bundle (.app) that can be copied
+to /Applications/ and run like any other macOS app. The bundle includes:
+\itemize{
+\item R runtime embedded in the app
+\item All required R packages
+\item Application files
+\item A double-clickable launcher
 }
 
 System requirements:
@@ -92,7 +95,14 @@ build_mac(
   r_version = "4.4.2",
   arch = "arm64",
   extra_dirs = c("models", "data"),
-  create_zip = TRUE
+  create_zip = TRUE,
+  app_name = "MyShinyApp"
+)
+
+# For multi-file Shiny apps with ui.R/server.R in project root
+build_mac(
+  project_path = "path/to/my/shiny/app"
+  # entry_script can be NULL if ui.R and server.R exist
 )
 }
 }
