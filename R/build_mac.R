@@ -27,7 +27,10 @@
 #'   "shiny::runApp('app', launch.browser=TRUE)".
 #' @param clean_on_error Whether to clean up on error.
 #' @param app_name Name of the macOS application bundle (without .app extension).
-#'   Defaults to "ShinyApp".
+#'   Only used when make_app = TRUE. Defaults to "ShinyApp".
+#' @param make_app Whether to create a macOS application bundle (.app) that can be
+#'   copied to /Applications/. If FALSE, creates a portable folder structure.
+#'   Defaults to TRUE.
 #'
 #' @return Invisibly returns the path to the distribution directory.
 #'
@@ -46,9 +49,18 @@
 #' @export
 #' @examples
 #' \dontrun{
+#' # Create macOS app bundle (default)
 #' build_mac(
 #'   project_path = "path/to/my/shiny/app",
-#'   entry_script = "app.R"
+#'   entry_script = "app.R",
+#'   app_name = "MyShinyApp"
+#' )
+#'
+#' # Create portable folder (like Windows version)
+#' build_mac(
+#'   project_path = "path/to/my/shiny/app",
+#'   entry_script = "app.R",
+#'   make_app = FALSE
 #' )
 #'
 #' build_mac(
@@ -79,7 +91,8 @@ build_mac <- function(project_path,
                       zip_name = "portable_app_macos.zip",
                       shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
                       clean_on_error = TRUE,
-                      app_name = "ShinyApp") {
+                      app_name = "ShinyApp",
+                      make_app = TRUE) {
 
   # Determine architecture
   if (is.null(arch)) {
@@ -122,12 +135,21 @@ build_mac <- function(project_path,
     deps <- check_system_deps("mac")
 
     # Step 3: Setup distribution directory
-    message("\n=== Step 3: Setting up macOS application bundle ===")
-    setup_mac_app_bundle(dist_dir, app_name)
+    if (make_app) {
+      message("\n=== Step 3: Setting up macOS application bundle ===")
+      setup_mac_app_bundle(dist_dir, app_name)
+    } else {
+      message("\n=== Step 3: Setting up portable folder ===")
+      setup_dist_directory(dist_dir, "mac")
+    }
 
     # Step 4: Copy app files
     message("\n=== Step 4: Copying app files ===")
-    copy_app_files_mac(project_path, dist_dir, entry_script, extra_dirs, app_name)
+    if (make_app) {
+      copy_app_files_mac(project_path, dist_dir, entry_script, extra_dirs, app_name)
+    } else {
+      copy_app_files(project_path, dist_dir, entry_script, extra_dirs)
+    }
 
     # Step 5: Download R for macOS
     message("\n=== Step 5: Downloading R for macOS ===")
@@ -140,22 +162,41 @@ build_mac <- function(project_path,
 
     # Step 6: Extract R
     message("\n=== Step 6: Extracting R ===")
-    extract_r_mac_app(r_pkg_path, dist_dir, app_name)
+    if (make_app) {
+      extract_r_mac_app(r_pkg_path, dist_dir, app_name)
+    } else {
+      extract_r_mac(r_pkg_path, dist_dir)
+    }
 
     # Step 7: Download packages
     message("\n=== Step 7: Downloading macOS packages ===")
-    download_packages_mac_app(
-      project_path = project_path,
-      dist_dir = dist_dir,
-      r_version_minor = r_version_minor,
-      fallback_r_version = fallback_r_version,
-      arch = arch,
-      app_name = app_name
-    )
+    if (make_app) {
+      download_packages_mac_app(
+        project_path = project_path,
+        dist_dir = dist_dir,
+        r_version_minor = r_version_minor,
+        fallback_r_version = fallback_r_version,
+        arch = arch,
+        app_name = app_name
+      )
+    } else {
+      download_packages_mac(
+        project_path = project_path,
+        dist_dir = dist_dir,
+        r_version_minor = r_version_minor,
+        fallback_r_version = fallback_r_version,
+        arch = arch
+      )
+    }
 
     # Step 8: Create launcher
-    message("\n=== Step 8: Creating macOS app launcher ===")
-    create_mac_app_launcher(dist_dir, entry_script, shiny_command, app_name)
+    if (make_app) {
+      message("\n=== Step 8: Creating macOS app launcher ===")
+      create_mac_app_launcher(dist_dir, entry_script, shiny_command, app_name)
+    } else {
+      message("\n=== Step 8: Creating launcher script ===")
+      create_mac_launcher(dist_dir, entry_script, shiny_command)
+    }
 
     # Step 9: Create zip if requested
     if (create_zip) {
@@ -164,10 +205,18 @@ build_mac <- function(project_path,
     }
 
     message("\n=== Build complete! ===")
-    message("macOS application bundle created in: ", file.path(dist_dir, paste0(app_name, ".app")))
+    if (make_app) {
+      message("macOS application bundle created in: ", file.path(dist_dir, paste0(app_name, ".app")))
+    } else {
+      message("Portable folder created in: ", dist_dir)
+    }
 
     .portR_error <- FALSE
-    invisible(file.path(dist_dir, paste0(app_name, ".app")))
+    if (make_app) {
+      invisible(file.path(dist_dir, paste0(app_name, ".app")))
+    } else {
+      invisible(dist_dir)
+    }
 
   }, error = function(e) {
     .portR_error <<- TRUE

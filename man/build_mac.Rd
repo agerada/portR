@@ -17,7 +17,8 @@ build_mac(
   zip_name = "portable_app_macos.zip",
   shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
   clean_on_error = TRUE,
-  app_name = "ShinyApp"
+  app_name = "ShinyApp",
+  make_app = TRUE
 )
 }
 \arguments{
@@ -56,7 +57,11 @@ system architecture.}
 \item{clean_on_error}{Whether to clean up on error.}
 
 \item{app_name}{Name of the macOS application bundle (without .app extension).
-Defaults to "ShinyApp".}
+Only used when make_app = TRUE. Defaults to "ShinyApp".}
+
+\item{make_app}{Whether to create a macOS application bundle (.app) that can be
+copied to /Applications/. If FALSE, creates a portable folder structure.
+Defaults to TRUE.}
 }
 \value{
 Invisibly returns the path to the distribution directory.
@@ -84,9 +89,18 @@ System requirements:
 }
 \examples{
 \dontrun{
+# Create macOS app bundle (default)
 build_mac(
   project_path = "path/to/my/shiny/app",
-  entry_script = "app.R"
+  entry_script = "app.R",
+  app_name = "MyShinyApp"
+)
+
+# Create portable folder (like Windows version)
+build_mac(
+  project_path = "path/to/my/shiny/app",
+  entry_script = "app.R",
+  make_app = FALSE
 )
 
 build_mac(
