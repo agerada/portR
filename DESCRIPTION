@@ -1,6 +1,6 @@
 Package: portR
 Title: Build Portable R Application Distributions
-Version: 0.1.0
+Version: 0.2.0
 Authors@R:
     person("Alessandro", "Gerada", , "alessandro.gerada@liverpool.ac.uk", role = c("aut", "cre"))
 Description: Build portable distributions of R Shiny applications that can
