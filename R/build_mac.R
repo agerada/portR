@@ -175,6 +175,35 @@ build_mac <- function(project_path,
   })
 }
 
+.download_binary_with_retry <- function(url, dest, quiet = TRUE, retries = 3, retry_wait_sec = 2) {
+  last_warnings <- character()
+  last_status <- 1
+
+  for (attempt in seq_len(retries)) {
+    last_warnings <- character()
+    last_status <- withCallingHandlers(
+      suppressWarnings(
+        download.file(url, dest, mode = "wb", quiet = quiet)
+      ),
+      warning = function(w) {
+        last_warnings <<- c(last_warnings, conditionMessage(w))
+        invokeRestart("muffleWarning")
+      }
+    )
+
+    if (identical(last_status, 0L) && file.exists(dest) && file.info(dest)$size > 0) {
+      return(invisible(list(ok = TRUE, warnings = last_warnings, status = last_status)))
+    }
+
+    # Briefly wait and retry. CRAN can temporarily publish PACKAGES before binaries sync.
+    if (attempt < retries) {
+      Sys.sleep(retry_wait_sec)
+    }
+  }
+
+  invisible(list(ok = FALSE, warnings = last_warnings, status = last_status))
+}
+
 #' Setup macOS application bundle structure
 #'
 #' @param dist_dir Distribution directory
@@ -454,29 +483,64 @@ download_packages_mac_app <- function(project_path, dist_dir,
 
     # Handle CRAN packages
     if (pkg_info$Source %in% c("Repository", "CRAN")) {
-      if (pkg_name %in% rownames(avail)) {
-        ver <- avail[pkg_name, "Version"]
-        # macOS uses .tgz files
-        url <- paste0(repo_url, "/", pkg_name, "_", ver, ".tgz")
-        dest <- file.path(lib_dir, paste0(pkg_name, ".tgz"))
+      lock_ver <- if (!is.null(pkg_info$Version)) as.character(pkg_info$Version) else NULL
+      repo_ver <- if (pkg_name %in% rownames(avail)) as.character(avail[pkg_name, "Version"]) else NULL
+      try_versions <- unique(stats::na.omit(c(lock_ver, repo_ver)))
 
-        if (!file.exists(file.path(lib_dir, pkg_name))) {
+      if (length(try_versions) == 0) {
+        warning("Package ", pkg_name, " not found in CRAN macOS binaries.")
+        failed_pkgs <- c(failed_pkgs, pkg_name)
+        next
+      }
+
+      if (!file.exists(file.path(lib_dir, pkg_name))) {
+        downloaded <- FALSE
+        lock_failed <- FALSE
+        used_version <- NULL
+        for (ver in try_versions) {
+          url <- paste0(repo_url, "/", pkg_name, "_", ver, ".tgz")
+          dest <- file.path(lib_dir, paste0(pkg_name, ".tgz"))
+
           message("Downloading ", pkg_name, " ", ver, "...")
-          result <- tryCatch({
-            download.file(url, dest, mode = "wb", quiet = TRUE)
-            # Extract .tgz
+          downloaded <- tryCatch({
+            dl <- .download_binary_with_retry(url, dest, quiet = TRUE, retries = 3, retry_wait_sec = 2)
+            if (!isTRUE(dl$ok)) {
+              if (!is.null(lock_ver) && identical(ver, lock_ver)) lock_failed <- TRUE
+              return(FALSE)
+            }
             untar(dest, exdir = lib_dir)
             unlink(dest)
             TRUE
           }, error = function(e) {
-            warning("Failed to download ", pkg_name, ": ", e$message)
             FALSE
           })
-          if (!result) failed_pkgs <- c(failed_pkgs, pkg_name)
+
+          if (isTRUE(downloaded)) {
+            used_version <- ver
+            break
+          }
         }
-      } else {
-        warning("Package ", pkg_name, " not found in CRAN macOS binaries.")
-        failed_pkgs <- c(failed_pkgs, pkg_name)
+
+        if (isTRUE(downloaded) && isTRUE(lock_failed) && !is.null(repo_ver) && identical(used_version, repo_ver)) {
+          warning(
+            "Downloaded ", pkg_name, " ", repo_ver,
+            " because lockfile version ", lock_ver, " was not available as a macOS binary yet.",
+            call. = FALSE
+          )
+        }
+
+        if (!isTRUE(downloaded)) {
+          warning(
+            "Failed to download ", pkg_name, " (tried versions: ", paste(try_versions, collapse = ", "), "). ",
+            "\nThis can happen during CRAN sync windows: PACKAGES metadata and the binary directory may be temporarily out of sync.",
+            "\nWorkaround: set CRAN as your repos and update/snapshot your lockfile:",
+            "\n  options(repos = c(CRAN = \"https://cran.r-project.org\"))",
+            "\n  renv::update()",
+            "\n  renv::snapshot()",
+            call. = FALSE
+          )
+          failed_pkgs <- c(failed_pkgs, pkg_name)
+        }
       }
     }
   }
@@ -758,29 +822,64 @@ download_packages_mac <- function(project_path, dist_dir,
 
     # Handle CRAN packages
     if (pkg_info$Source %in% c("Repository", "CRAN")) {
-      if (pkg_name %in% rownames(avail)) {
-        ver <- avail[pkg_name, "Version"]
-        # macOS uses .tgz files
-        url <- paste0(repo_url, "/", pkg_name, "_", ver, ".tgz")
-        dest <- file.path(lib_dir, paste0(pkg_name, ".tgz"))
+      lock_ver <- if (!is.null(pkg_info$Version)) as.character(pkg_info$Version) else NULL
+      repo_ver <- if (pkg_name %in% rownames(avail)) as.character(avail[pkg_name, "Version"]) else NULL
+      try_versions <- unique(stats::na.omit(c(lock_ver, repo_ver)))
 
-        if (!file.exists(file.path(lib_dir, pkg_name))) {
+      if (length(try_versions) == 0) {
+        warning("Package ", pkg_name, " not found in CRAN macOS binaries.")
+        failed_pkgs <- c(failed_pkgs, pkg_name)
+        next
+      }
+
+      if (!file.exists(file.path(lib_dir, pkg_name))) {
+        downloaded <- FALSE
+        lock_failed <- FALSE
+        used_version <- NULL
+        for (ver in try_versions) {
+          url <- paste0(repo_url, "/", pkg_name, "_", ver, ".tgz")
+          dest <- file.path(lib_dir, paste0(pkg_name, ".tgz"))
+
           message("Downloading ", pkg_name, " ", ver, "...")
-          result <- tryCatch({
-            download.file(url, dest, mode = "wb", quiet = TRUE)
-            # Extract .tgz
+          downloaded <- tryCatch({
+            dl <- .download_binary_with_retry(url, dest, quiet = TRUE, retries = 3, retry_wait_sec = 2)
+            if (!isTRUE(dl$ok)) {
+              if (!is.null(lock_ver) && identical(ver, lock_ver)) lock_failed <- TRUE
+              return(FALSE)
+            }
             untar(dest, exdir = lib_dir)
             unlink(dest)
             TRUE
           }, error = function(e) {
-            warning("Failed to download ", pkg_name, ": ", e$message)
             FALSE
           })
-          if (!result) failed_pkgs <- c(failed_pkgs, pkg_name)
+
+          if (isTRUE(downloaded)) {
+            used_version <- ver
+            break
+          }
         }
-      } else {
-        warning("Package ", pkg_name, " not found in CRAN macOS binaries.")
-        failed_pkgs <- c(failed_pkgs, pkg_name)
+
+        if (isTRUE(downloaded) && isTRUE(lock_failed) && !is.null(repo_ver) && identical(used_version, repo_ver)) {
+          warning(
+            "Downloaded ", pkg_name, " ", repo_ver,
+            " because lockfile version ", lock_ver, " was not available as a macOS binary yet.",
+            call. = FALSE
+          )
+        }
+
+        if (!isTRUE(downloaded)) {
+          warning(
+            "Failed to download ", pkg_name, " (tried versions: ", paste(try_versions, collapse = ", "), "). ",
+            "\nThis can happen during CRAN sync windows: PACKAGES metadata and the binary directory may be temporarily out of sync.",
+            "\nWorkaround: set CRAN as your repos and update/snapshot your lockfile:",
+            "\n  options(repos = c(CRAN = \"https://cran.r-project.org\"))",
+            "\n  renv::update()",
+            "\n  renv::snapshot()",
+            call. = FALSE
+          )
+          failed_pkgs <- c(failed_pkgs, pkg_name)
+        }
       }
     }
   }
