@@ -88,6 +88,7 @@ build_windows(
 ### Build for macOS
 
 ```r
+# Create macOS app bundle (recommended for end users)
 build_mac(
   project_path = "path/to/your/project",
   entry_script = "app.R",  # Optional for multi-file apps
@@ -95,7 +96,15 @@ build_mac(
   arch = "arm64",  # or "x86_64"
   extra_dirs = c("models", "data"),
   create_zip = TRUE,
-  app_name = "MyShinyApp"
+  app_name = "MyShinyApp",
+  make_app = TRUE  # Default
+)
+
+# Create portable folder (like Windows version)
+build_mac(
+  project_path = "path/to/your/project",
+  entry_script = "app.R",
+  make_app = FALSE
 )
 ```
 
@@ -121,25 +130,13 @@ build_mac(
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `arch` | Target architecture: "arm64" or "x86_64" | System architecture |
+| `app_name` | Name of the macOS application bundle | `"ShinyApp"` |
+| `make_app` | Create macOS app bundle (TRUE) or portable folder (FALSE) | `TRUE` |
 | `app_name` | Name of the macOS application bundle (without .app) | `"ShinyApp"` |
 
 ## Output Structure
 
-### Windows Distribution
-
-```
-dist/
-├── R/                    # R runtime
-│   └── bin/x64/
-├── library/              # R packages
-├── app/                  # Application files
-├── app.R                 # Entry script
-├── models/               # Extra directories
-└── run_app.bat           # Launcher (double-click to run)
-```
-
-### macOS Distribution
+### macOS Application Bundle (make_app = TRUE)
 
 Creates a macOS application bundle (.app) that can be copied to `/Applications/` and run like any other macOS app:
 
@@ -157,6 +154,22 @@ dist/
             │   ├── app.R # Entry script
             │   └── models/  # Extra directories
             └── library/  # R packages
+```
+
+### macOS Portable Folder (make_app = FALSE)
+
+Creates a portable folder structure similar to the Windows version:
+
+```
+dist/
+├── R/                    # R framework
+│   └── R.framework/
+├── library/              # R packages
+├── app/                  # Application files
+├── app.R                 # Entry script
+├── models/               # Extra directories
+├── run_app.sh            # Shell script launcher
+└── Run Application.command  # Double-click launcher
 ```
 
 ## Local Packages
@@ -187,6 +200,18 @@ brew install innoextract  # macOS
 - Check internet connectivity
 - Try a different R version with `fallback_r_version`
 - Some packages may not have binary versions available
+\
+**If you see missing macOS binaries or version mismatches:**
+
+1. Ensure you're using the official CRAN repository and update your lockfile:
+
+```r
+options(repos = c(CRAN = "https://cran.r-project.org"))
+renv::update()
+renv::snapshot()
+```
+
+2. Then re-run the `build_mac()` command. If the problem persists, wait a short time (CRAN mirrors and PACKAGES metadata may be temporarily out of sync) or pin the package version in `renv.lock`.
 
 ## License
 
