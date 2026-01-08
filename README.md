@@ -32,24 +32,35 @@ renv::snapshot()
 
 ### System Requirements
 
-#### For Windows builds (on macOS/Linux):
+The build host and target machine determine which tools are required. Use the table below to quickly find the required tools for your build scenario.
 
-- `innoextract` (recommended) or `7z` for extracting R installer
-  ```bash
-  # macOS
-  brew install innoextract
-  
-  # Ubuntu/Debian
-  sudo apt install innoextract
-  ```
+| Host machine | Target machine | Requirements |
+|---|---|---|
+| macOS / Linux | Windows | [innoextract (recommended) or 7z for extracting the R installer](#windows-builds) |
+| macOS | macOS | [pkgutil and hdiutil (included on macOS)](#macos-builds) |
+| Any | Creating archives | [zip command (standard on most systems)](#creating-archives) |
 
-#### For macOS builds:
+#### <a name="windows-builds"></a>For Windows builds (on macOS/Linux)
 
-- `pkgutil` and `hdiutil` (standard on macOS)
+`innoextract` (recommended) or `7z` for extracting the R installer.
 
-#### For creating archives:
+Install notes:
 
-- `zip` command (standard on most systems)
+```bash
+# macOS
+brew install innoextract
+
+# Ubuntu/Debian
+sudo apt install innoextract
+```
+
+#### <a name="macos-builds"></a>For macOS builds
+
+`pkgutil` and `hdiutil` (standard on macOS)
+
+#### <a name="creating-archives"></a>Creating archives
+
+`zip` command (standard on most systems)
 
 ## Usage
 
