@@ -460,6 +460,10 @@ extract_r_mac_app <- function(r_pkg_path, dist_dir, app_name) {
       resources <- file.path(frameworks_dir, "R.framework", "Resources")
       if (dir.exists(resources)) {
         message("R framework extracted successfully.")
+        
+        # Fix R.framework to be relocatable
+        message("Making R.framework relocatable...")
+        fix_r_framework_paths(file.path(frameworks_dir, "R.framework"))
       }
     }
     unlink(r_extract_dir, recursive = TRUE)
@@ -477,6 +481,97 @@ extract_r_mac_app <- function(r_pkg_path, dist_dir, app_name) {
   }
 
   invisible(extraction_done)
+}
+
+#' Fix R.framework paths to make it relocatable
+#'
+#' R.framework contains hardcoded paths to /Library/Frameworks/R.framework.
+#' This function fixes scripts and symlinks to work from any location.
+#'
+#' @param framework_path Path to R.framework
+#' @return Invisible TRUE
+#' @keywords internal
+fix_r_framework_paths <- function(framework_path) {
+  resources_dir <- file.path(framework_path, "Resources")
+  bin_dir <- file.path(resources_dir, "bin")
+  
+  # Fix the R script (main entry point)
+  r_script <- file.path(bin_dir, "R")
+  if (file.exists(r_script)) {
+    content <- readLines(r_script, warn = FALSE)
+    
+    # Replace hardcoded R_HOME with dynamic detection
+    # The original usually has: R_HOME=/Library/Frameworks/R.framework/Resources
+    content <- gsub(
+      "^R_HOME=.*$",
+      "R_HOME=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources\"",
+      content
+    )
+    
+    # Also fix any other hardcoded /Library/Frameworks paths
+    content <- gsub(
+      "/Library/Frameworks/R\\.framework/Resources",
+      "${R_HOME}",
+      content
+    )
+    
+    writeLines(content, r_script)
+    Sys.chmod(r_script, mode = "0755")
+  }
+  
+ # Fix the Rscript wrapper
+  rscript <- file.path(bin_dir, "Rscript")
+  if (file.exists(rscript) && !file.info(rscript)$isdir) {
+    # Check if it's a script (not a binary)
+    first_line <- tryCatch(
+      readLines(rscript, n = 1, warn = FALSE),
+      error = function(e) NULL
+    )
+    
+    if (!is.null(first_line) && grepl("^#!", first_line)) {
+      content <- readLines(rscript, warn = FALSE)
+      
+      content <- gsub(
+        "/Library/Frameworks/R\\.framework/Resources",
+        "$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources",
+        content
+      )
+      
+      writeLines(content, rscript)
+      Sys.chmod(rscript, mode = "0755")
+    }
+  }
+  
+  # Fix any shell scripts in bin/ that have hardcoded paths
+  bin_files <- list.files(bin_dir, full.names = TRUE)
+  for (f in bin_files) {
+    if (file.info(f)$isdir) next
+    
+    # Check if it's a text file (script)
+    first_bytes <- tryCatch({
+      readBin(f, "raw", n = 2)
+    }, error = function(e) NULL)
+    
+    if (!is.null(first_bytes) && rawToChar(first_bytes) == "#!") {
+      content <- tryCatch(
+        readLines(f, warn = FALSE),
+        error = function(e) NULL
+      )
+      
+      if (!is.null(content) && any(grepl("/Library/Frameworks/R.framework", content))) {
+        content <- gsub(
+          "/Library/Frameworks/R\\.framework/Resources",
+          "${R_HOME:-$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources}",
+          content
+        )
+        writeLines(content, f)
+        Sys.chmod(f, mode = "0755")
+      }
+    }
+  }
+  
+  message("R.framework paths fixed for portability.")
+  invisible(TRUE)
 }
 
 #' Download macOS binary packages for app bundle
@@ -619,28 +714,296 @@ create_mac_app_launcher <- function(dist_dir, entry_script, shiny_command, app_n
   contents_dir <- file.path(app_bundle_dir, "Contents")
   macos_dir <- file.path(contents_dir, "MacOS")
   
-  # Create executable script
+  # Create executable script with comprehensive debugging and self-contained paths
+  # Note: We use $0 instead of BASH_SOURCE for compatibility with double-click launching
+  #
+  # IMPORTANT: macOS app bundles don't directly support shell scripts as executables
+  # when launched via double-click. The script will run but has no terminal for output.
+  # We handle this by:
+  # 1. Logging everything to a file
+  # 2. Showing errors via osascript dialogs
+  # 3. The script works perfectly when run from terminal
+  
   script_content <- c(
     "#!/bin/bash",
     "",
-    "# Get the directory where this script is located",
-    "SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"",
+    "# Portable macOS Shiny App Launcher",
+    "# All paths are relative to this executable - no external dependencies",
+    "",
+    "# Ensure we're using bash from a known location",
+    "# macOS may use sh to launch scripts from app bundles",
+    "if [ -z \"$BASH_VERSION\" ]; then",
+    "  exec /bin/bash \"$0\" \"$@\"",
+    "fi",
+    "",
+    "# === Resolve script path ===",
+    "# When launched via double-click or 'open', $0 may be relative and pwd is /",
+    "# We need to resolve the absolute path carefully",
+    "",
+    "resolve_script_path() {",
+    "  local script=\"$1\"",
+    "  ",
+    "  # If already absolute, use it",
+    "  if [[ \"$script\" == /* ]]; then",
+    "    echo \"$script\"",
+    "    return",
+    "  fi",
+    "  ",
+    "  # Try to resolve relative path",
+    "  if [[ -f \"$(pwd)/$script\" ]]; then",
+    "    echo \"$(cd \"$(dirname \"$(pwd)/$script\")\" && pwd)/$(basename \"$script\")\"",
+    "    return",
+    "  fi",
+    "  ",
+    "  # Fallback: the script might be in PATH or we need to find it another way",
+    "  # For app bundles, macOS sets the working directory to / but $0 should still be absolute",
+    "  echo \"$script\"",
+    "}",
+    "",
+    "SCRIPT_PATH=$(resolve_script_path \"$0\")",
+    "",
+    "# If path resolution failed (not absolute), try using lsof to find our script",
+    "if [[ \"$SCRIPT_PATH\" != /* ]]; then",
+    "  # Last resort: try to find ourselves via the process",
+    "  SCRIPT_PATH=$(lsof -p $$ 2>/dev/null | grep txt | grep -v '\\->' | head -1 | awk '{print $NF}')",
+    "fi",
+    "",
+    "# Verify we have a valid path",
+    "if [[ ! -f \"$SCRIPT_PATH\" ]]; then",
+    "  # Ultimate fallback for app bundles: construct from bundle path",
+    "  # macOS sets __CFBundleIdentifier when launching apps",
+    paste0("  SCRIPT_PATH=\"/Applications/", app_name, ".app/Contents/MacOS/", app_name, "\""),
+    "  if [[ ! -f \"$SCRIPT_PATH\" ]]; then",
+    "    osascript -e 'display alert \"Launch Error\" message \"Could not determine script location. Please run from terminal.\"' 2>/dev/null",
+    "    exit 1",
+    "  fi",
+    "fi",
+    "",
+    "SCRIPT_DIR=\"$(cd \"$(dirname \"$SCRIPT_PATH\")\" && pwd)\"",
     "CONTENTS_DIR=\"$(dirname \"$SCRIPT_DIR\")\"",
+    "RESOURCES_DIR=\"$CONTENTS_DIR/Resources\"",
+    "FRAMEWORKS_DIR=\"$CONTENTS_DIR/Frameworks\"",
+    "LOG_FILE=\"$CONTENTS_DIR/launch.log\"",
     "",
-    "# Set up R environment",
-    "export R_HOME=\"$CONTENTS_DIR/Frameworks/R.framework/Resources\"",
-    "export R_LIBS_USER=\"$CONTENTS_DIR/Resources/library\"",
-    "export PATH=\"$R_HOME/bin:$PATH\"",
+    "# R framework paths (all within the app bundle)",
+    "R_FRAMEWORK=\"$FRAMEWORKS_DIR/R.framework\"",
+    "R_HOME_DIR=\"$R_FRAMEWORK/Resources\"",
+    "R_BIN_DIR=\"$R_HOME_DIR/bin\"",
+    "# Use the R shell script instead of Rscript binary - R script is patchable for portability",
+    "# Rscript is a compiled binary with hardcoded paths that we can't fix",
+    "R_SCRIPT=\"$R_BIN_DIR/R\"",
+    "R_LIBRARY=\"$RESOURCES_DIR/library\"",
+    "APP_DIR=\"$RESOURCES_DIR/app\"",
     "",
-    "# Change to the Resources directory where the app folder is located",
-    "cd \"$CONTENTS_DIR/Resources\"",
+    "# === Logging functions ===",
+    "log_msg() {",
+    "  echo \"$1\"",
+    "  echo \"$(date '+%Y-%m-%d %H:%M:%S') $1\" >> \"$LOG_FILE\" 2>/dev/null",
+    "}",
     "",
-    "echo \"Starting application...\"",
-    paste0("\"$R_HOME/bin/Rscript\" -e \"", shiny_command, "\"")
+    "# Initialize log",
+    "echo \"\" >> \"$LOG_FILE\" 2>/dev/null",
+    "echo \"========================================\" >> \"$LOG_FILE\" 2>/dev/null",
+    "log_msg \"=== portR App Launcher ===\"",
+    "log_msg \"Script: $SCRIPT_PATH\"",
+    "log_msg \"SCRIPT_DIR: $SCRIPT_DIR\"",
+    "log_msg \"CONTENTS_DIR: $CONTENTS_DIR\"",
+    "log_msg \"RESOURCES_DIR: $RESOURCES_DIR\"",
+    "log_msg \"R_FRAMEWORK: $R_FRAMEWORK\"",
+    "log_msg \"R_HOME_DIR: $R_HOME_DIR\"",
+    "log_msg \"R_SCRIPT: $R_SCRIPT\"",
+    "log_msg \"R_LIBRARY: $R_LIBRARY\"",
+    "log_msg \"APP_DIR: $APP_DIR\"",
+    "log_msg \"Host architecture: $(uname -m)\"",
+    "log_msg \"Working directory: $(pwd)\"",
+    "log_msg \"\"",
+    "",
+    "error_exit() {",
+    "  log_msg \"\"",
+    "  log_msg \"ERROR: $1\"",
+    "  log_msg \"\"",
+    "  # Show error dialog when launched from GUI",
+    "  osascript -e \"display alert \\\"Application Error\\\" message \\\"$1\\n\\nCheck log at: $LOG_FILE\\\"\" 2>/dev/null",
+    "  exit 1",
+    "}",
+    "",
+    "# === Path Verification ===",
+    "log_msg \"Checking paths...\"",
+    "",
+    "if [ ! -d \"$R_FRAMEWORK\" ]; then",
+    "  log_msg \"  [FAIL] R.framework not found\"",
+    "  error_exit \"R.framework not found at: $R_FRAMEWORK\"",
+    "else",
+    "  log_msg \"  [OK] R.framework\"",
+    "fi",
+    "",
+    "if [ ! -d \"$R_HOME_DIR\" ]; then",
+    "  log_msg \"  [FAIL] R Resources not found\"",
+    "  error_exit \"R Resources not found at: $R_HOME_DIR\"",
+    "else",
+    "  log_msg \"  [OK] R Resources\"",
+    "fi",
+    "",
+    "if [ ! -d \"$R_BIN_DIR\" ]; then",
+    "  log_msg \"  [FAIL] R bin directory not found\"",
+    "  error_exit \"R bin directory not found at: $R_BIN_DIR\"",
+    "else",
+    "  log_msg \"  [OK] R bin directory\"",
+    "fi",
+    "",
+    "if [ ! -f \"$R_SCRIPT\" ]; then",
+    "  log_msg \"  [FAIL] R script not found\"",
+    "  log_msg \"  Contents of bin directory:\"",
+    "  ls -la \"$R_BIN_DIR\" 2>&1 | while read line; do log_msg \"    $line\"; done",
+    "  error_exit \"R script not found at: $R_SCRIPT\"",
+    "else",
+    "  log_msg \"  [OK] R script exists\"",
+    "fi",
+    "",
+    "if [ ! -x \"$R_SCRIPT\" ]; then",
+    "  log_msg \"  [FAIL] R script not executable\"",
+    "  error_exit \"R script is not executable: $R_SCRIPT\"",
+    "else",
+    "  log_msg \"  [OK] R script is executable\"",
+    "fi",
+    "",
+    "if [ ! -d \"$R_LIBRARY\" ]; then",
+    "  log_msg \"  [FAIL] R library not found\"",
+    "  error_exit \"R library not found at: $R_LIBRARY\"",
+    "else",
+    "  log_msg \"  [OK] R library ($(ls -1 \"$R_LIBRARY\" | wc -l | tr -d ' ') packages)\"",
+    "fi",
+    "",
+    "if [ ! -d \"$APP_DIR\" ]; then",
+    "  log_msg \"  [FAIL] App directory not found\"",
+    "  error_exit \"App directory not found at: $APP_DIR\"",
+    "else",
+    "  log_msg \"  [OK] App directory\"",
+    "fi",
+    "",
+    "# === Architecture Check ===",
+    "log_msg \"\"",
+    "log_msg \"Checking architecture...\"",
+    "HOST_ARCH=$(uname -m)",
+    "# Check the actual R binary (not the script) for architecture",
+    "R_BINARY=\"$R_HOME_DIR/bin/exec/R\"",
+    "R_BINARY_INFO=$(/usr/bin/file \"$R_BINARY\" 2>/dev/null)",
+    "log_msg \"  Host: $HOST_ARCH\"",
+    "log_msg \"  R binary: $R_BINARY_INFO\"",
+    "",
+    "if echo \"$R_BINARY_INFO\" | grep -q 'arm64' && [ \"$HOST_ARCH\" != \"arm64\" ]; then",
+    "  error_exit \"Architecture mismatch: App built for arm64, running on $HOST_ARCH. Rebuild with: build_mac(arch = \\\"$HOST_ARCH\\\")\"",
+    "fi",
+    "if echo \"$R_BINARY_INFO\" | grep -q 'x86_64' && [ \"$HOST_ARCH\" != \"x86_64\" ]; then",
+    "  error_exit \"Architecture mismatch: App built for x86_64, running on $HOST_ARCH. Rebuild with: build_mac(arch = \\\"$HOST_ARCH\\\")\"",
+    "fi",
+    "log_msg \"  [OK] Architecture compatible\"",
+    "",
+    "# === Set Environment Variables ===",
+    "log_msg \"\"",
+    "log_msg \"Setting environment...\"",
+    "",
+    "# IMPORTANT: Do NOT set R_HOME - let R determine it from the executable path",
+    "# Setting R_HOME causes the 'ignoring environment value of R_HOME' warning",
+    "# and can cause issues. Instead, we rely on the embedded R finding itself.",
+    "unset R_HOME",
+    "",
+    "# Set library paths to use only embedded packages",
+    "export R_LIBS=\"$R_LIBRARY\"",
+    "export R_LIBS_USER=\"$R_LIBRARY\"",
+    "export R_LIBS_SITE=\"\"",
+    "",
+    "# Clear any system R settings that might interfere",
+    "unset R_ENVIRON",
+    "unset R_ENVIRON_USER", 
+    "unset R_PROFILE",
+    "unset R_PROFILE_USER",
+    "",
+    "# Help dyld find libraries (may not be needed but doesn't hurt)",
+    "export DYLD_LIBRARY_PATH=\"$R_HOME_DIR/lib:$FRAMEWORKS_DIR:${DYLD_LIBRARY_PATH:-}\"",
+    "export DYLD_FRAMEWORK_PATH=\"$FRAMEWORKS_DIR:${DYLD_FRAMEWORK_PATH:-}\"",
+    "",
+    "log_msg \"  R_LIBS=$R_LIBS\"",
+    "log_msg \"  R_LIBS_USER=$R_LIBS_USER\"",
+    "",
+    "# === Test R Execution ===",
+    "log_msg \"\"",
+    "log_msg \"Testing R...\"",
+    "R_TEST=$(\"$R_SCRIPT\" --vanilla --slave -e 'cat(R.version.string)' 2>&1)",
+    "R_EXIT=$?",
+    "log_msg \"  Exit code: $R_EXIT\"",
+    "log_msg \"  Output: $R_TEST\"",
+    "",
+    "if [ $R_EXIT -ne 0 ]; then",
+    "  log_msg \"\"",
+    "  log_msg \"R execution failed!\"",
+    "  log_msg \"\"",
+    "  log_msg \"Detailed diagnostics:\"",
+    "  log_msg \"  R script path: $R_SCRIPT\"",
+    "  log_msg \"  File exists: $(test -f \\\"$R_SCRIPT\\\" && echo 'yes' || echo 'no')\"",
+    "  log_msg \"  File executable: $(test -x \\\"$R_SCRIPT\\\" && echo 'yes' || echo 'no')\"",
+    "  log_msg \"  R binary: $R_BINARY_INFO\"",
+    "  log_msg \"  Host arch: $HOST_ARCH\"",
+    "  log_msg \"\"",
+    "  log_msg \"  Trying verbose execution...\"",
+    "  \"$R_SCRIPT\" --vanilla --slave -e 'cat(\"R is working\\\\n\")' >> \"$LOG_FILE\" 2>&1",
+    "  log_msg \"\"",
+    "  error_exit \"Cannot execute R\"",
+    "fi",
+    "log_msg \"  [OK] R works\"",
+    "",
+    "# === Change to App Directory and Launch ===",
+    "log_msg \"\"",
+    "log_msg \"Launching application...\"",
+    "cd \"$RESOURCES_DIR\" || error_exit \"Cannot cd to $RESOURCES_DIR\"",
+    "log_msg \"  Working directory: $(pwd)\"",
+    "log_msg \"  App contents: $(ls -1 \\\"$APP_DIR\\\" | head -5 | tr '\\\\n' ' ')...\"",
+    "log_msg \"\"",
+    "",
+    "# Use R with --vanilla (ignore startup files) and --slave (minimal output) instead of Rscript",
+    "# Rscript is a compiled binary with hardcoded paths that don't work in portable apps",
+    "# R is a shell script that we've patched to be relocatable",
+    paste0("exec \"$R_SCRIPT\" --vanilla --slave -e \"", shiny_command, "\"")
+  )
+
+  # Write the actual launcher script to Resources/launcher.sh
+  launcher_script_path <- file.path(contents_dir, "Resources", "launcher.sh")
+  writeLines(script_content, launcher_script_path)
+  Sys.chmod(launcher_script_path, mode = "0755")
+
+  # Create the main executable that opens Terminal with the launcher script
+  # This is necessary because macOS doesn't properly execute shell scripts
+  # as app bundle executables when double-clicked or opened via 'open' command
+  main_executable_content <- c(
+    "#!/bin/bash",
+    "",
+    "# macOS App Bundle Wrapper",
+    "# This script opens Terminal to run the actual launcher",
+    "# because macOS doesn't execute shell scripts properly as app executables",
+    "",
+    "# Find our location",
+    "SCRIPT_DIR=\"$(cd \"$(dirname \"$0\")\" && pwd)\"",
+    "CONTENTS_DIR=\"$(dirname \"$SCRIPT_DIR\")\"",
+    "LAUNCHER=\"$CONTENTS_DIR/Resources/launcher.sh\"",
+    "",
+    "# Check if launcher exists",
+    "if [ ! -f \"$LAUNCHER\" ]; then",
+    "  osascript -e 'display alert \"Error\" message \"Launcher script not found. The app bundle may be corrupted.\"'",
+    "  exit 1",
+    "fi",
+    "",
+    "# Open Terminal and run the launcher",
+    "# Use osascript to tell Terminal to run our script",
+    "osascript <<EOF",
+    "tell application \"Terminal\"",
+    "    activate",
+    "    do script \"'$LAUNCHER'\"",
+    "end tell",
+    "EOF"
   )
 
   executable_path <- file.path(macos_dir, app_name)
-  writeLines(script_content, executable_path)
+  writeLines(main_executable_content, executable_path)
 
   # Make executable
   Sys.chmod(executable_path, mode = "0755")
