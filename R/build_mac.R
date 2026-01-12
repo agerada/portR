@@ -492,85 +492,129 @@ extract_r_mac_app <- function(r_pkg_path, dist_dir, app_name) {
 #' @return Invisible TRUE
 #' @keywords internal
 fix_r_framework_paths <- function(framework_path) {
-  resources_dir <- file.path(framework_path, "Resources")
-  bin_dir <- file.path(resources_dir, "bin")
-  
-  # Fix the R script (main entry point)
-  r_script <- file.path(bin_dir, "R")
-  if (file.exists(r_script)) {
-    content <- readLines(r_script, warn = FALSE)
+  # Wrap entire function in tryCatch to prevent any binary file issues from breaking the build
+  tryCatch({
+    resources_dir <- file.path(framework_path, "Resources")
+    bin_dir <- file.path(resources_dir, "bin")
     
-    # Replace hardcoded R_HOME with dynamic detection
-    # The original usually has: R_HOME=/Library/Frameworks/R.framework/Resources
-    content <- gsub(
-      "^R_HOME=.*$",
-      "R_HOME=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources\"",
-      content
-    )
-    
-    # Also fix any other hardcoded /Library/Frameworks paths
-    content <- gsub(
-      "/Library/Frameworks/R\\.framework/Resources",
-      "${R_HOME}",
-      content
-    )
-    
-    writeLines(content, r_script)
-    Sys.chmod(r_script, mode = "0755")
-  }
-  
- # Fix the Rscript wrapper
-  rscript <- file.path(bin_dir, "Rscript")
-  if (file.exists(rscript) && !file.info(rscript)$isdir) {
-    # Check if it's a script (not a binary)
-    first_line <- tryCatch(
-      readLines(rscript, n = 1, warn = FALSE),
-      error = function(e) NULL
-    )
-    
-    if (!is.null(first_line) && grepl("^#!", first_line)) {
-      content <- readLines(rscript, warn = FALSE)
-      
-      content <- gsub(
-        "/Library/Frameworks/R\\.framework/Resources",
-        "$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources",
-        content
-      )
-      
-      writeLines(content, rscript)
-      Sys.chmod(rscript, mode = "0755")
+    # Fix the R script (main entry point)
+    r_script <- file.path(bin_dir, "R")
+    if (file.exists(r_script)) {
+      tryCatch({
+        content <- readLines(r_script, warn = FALSE)
+        
+        # Replace hardcoded R_HOME with dynamic detection
+        # The original usually has: R_HOME=/Library/Frameworks/R.framework/Resources
+        content <- gsub(
+          "^R_HOME=.*$",
+          "R_HOME=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources\"",
+          content,
+          useBytes = TRUE
+        )
+        
+        # Also fix any other hardcoded /Library/Frameworks paths
+        content <- gsub(
+          "/Library/Frameworks/R\\.framework/Resources",
+          "${R_HOME}",
+          content,
+          useBytes = TRUE
+        )
+        
+        writeLines(content, r_script)
+        Sys.chmod(r_script, mode = "0755")
+      }, error = function(e) {
+        warning("Could not fix R script: ", e$message)
+      })
     }
-  }
-  
-  # Fix any shell scripts in bin/ that have hardcoded paths
-  bin_files <- list.files(bin_dir, full.names = TRUE)
-  for (f in bin_files) {
-    if (file.info(f)$isdir) next
     
-    # Check if it's a text file (script)
-    first_bytes <- tryCatch({
-      readBin(f, "raw", n = 2)
-    }, error = function(e) NULL)
-    
-    if (!is.null(first_bytes) && rawToChar(first_bytes) == "#!") {
-      content <- tryCatch(
-        readLines(f, warn = FALSE),
+   # Fix the Rscript wrapper
+    rscript <- file.path(bin_dir, "Rscript")
+    if (file.exists(rscript) && !file.info(rscript)$isdir) {
+      # Check if it's a script (not a binary)
+      first_line <- tryCatch(
+        readLines(rscript, n = 1, warn = FALSE),
         error = function(e) NULL
       )
       
-      if (!is.null(content) && any(grepl("/Library/Frameworks/R.framework", content))) {
-        content <- gsub(
-          "/Library/Frameworks/R\\.framework/Resources",
-          "${R_HOME:-$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources}",
-          content
-        )
-        writeLines(content, f)
-        Sys.chmod(f, mode = "0755")
+      # first_line could be NULL, character(0), or contain binary data
+      is_script <- !is.null(first_line) && 
+                   length(first_line) == 1 && 
+                   nchar(first_line, type = "bytes") > 0 &&
+                   tryCatch(grepl("^#!", first_line, useBytes = TRUE), error = function(e) FALSE)
+      
+      if (is_script) {
+        tryCatch({
+          content <- readLines(rscript, warn = FALSE)
+          
+          content <- gsub(
+            "/Library/Frameworks/R\\.framework/Resources",
+            "$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources",
+            content,
+            useBytes = TRUE
+          )
+          
+          writeLines(content, rscript)
+          Sys.chmod(rscript, mode = "0755")
+        }, error = function(e) {
+          warning("Could not fix Rscript: ", e$message)
+        })
       }
     }
-  }
+    
+    # Fix any shell scripts in bin/ that have hardcoded paths
+    bin_files <- list.files(bin_dir, full.names = TRUE)
+    for (f in bin_files) {
+      if (!file.exists(f) || file.info(f)$isdir) next
+      
+      # Check if it's a text file (script) by reading first bytes
+      first_bytes <- tryCatch({
+        readBin(f, "raw", n = 2)
+      }, error = function(e) NULL)
+      
+      # Check for shebang "#!" (0x23 0x21)
+      is_script <- !is.null(first_bytes) && 
+                   length(first_bytes) >= 2 &&
+                   first_bytes[1] == as.raw(0x23) && 
+                   first_bytes[2] == as.raw(0x21)
+      
+      if (is_script) {
+        content <- tryCatch(
+          readLines(f, warn = FALSE),
+          error = function(e) NULL
+        )
+        
+        if (!is.null(content) && length(content) > 0) {
+          # Check for framework paths, but handle binary content gracefully
+          has_framework_path <- tryCatch(
+            any(grepl("/Library/Frameworks/R.framework", content, fixed = TRUE, useBytes = TRUE)),
+            error = function(e) FALSE
+          )
+          
+          if (has_framework_path) {
+            content <- tryCatch(
+              gsub(
+                "/Library/Frameworks/R\\.framework/Resources",
+                "${R_HOME:-$(cd \"$(dirname \"$0\")/../..\" && pwd)/Resources}",
+                content,
+                useBytes = TRUE
+              ),
+              error = function(e) content  # Keep original if gsub fails
+            )
+            tryCatch({
+              writeLines(content, f)
+              Sys.chmod(f, mode = "0755")
+            }, error = function(e) NULL)
+          }
+        }
+      }
+    }
+    
+    message("R.framework paths fixed for portability.")
+  }, error = function(e) {
+    warning("Could not fix R.framework paths: ", e$message, 
+            ". The app may still work if launched from the correct directory.")
+  })
   
-  message("R.framework paths fixed for portability.")
   invisible(TRUE)
 }
 

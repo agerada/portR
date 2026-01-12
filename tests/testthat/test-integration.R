@@ -229,7 +229,7 @@ test_that("build_windows creates zip archive when requested", {
 # macOS Build Integration Tests
 # =============================================================================
 
-test_that("build_mac works with minimal-app fixture", {
+test_that("build_mac works with minimal-app fixture (make_app=FALSE legacy mode)", {
   skip_if_no_integration()
   skip_if_not_macos()
 
@@ -243,6 +243,7 @@ test_that("build_mac works with minimal-app fixture", {
     project_path = fixture_path,
     entry_script = "app.R",
     output_dir = dist_dir,
+    make_app = FALSE,  # Test legacy folder mode
     clean_on_error = FALSE
   )
 
@@ -253,7 +254,7 @@ test_that("build_mac works with minimal-app fixture", {
   expect_true(dir.exists(file.path(result, "library")))
 })
 
-test_that("build_mac works with standard-app and extra_dirs", {
+test_that("build_mac works with standard-app and extra_dirs (make_app=FALSE legacy mode)", {
   skip_if_no_integration()
   skip_if_not_macos()
 
@@ -269,14 +270,23 @@ test_that("build_mac works with standard-app and extra_dirs", {
     entry_script = info$entry_script,
     output_dir = dist_dir,
     extra_dirs = info$extra_dirs,
+    make_app = FALSE,  # Test legacy folder mode
     clean_on_error = FALSE
   )
 
   expect_true(dir.exists(result))
   expect_true(dir.exists(file.path(result, "app")))
+  
+  # Check that extra_dirs were copied
+  for (extra_dir in info$extra_dirs) {
+    expect_true(
+      dir.exists(file.path(result, extra_dir)),
+      info = paste("Extra directory not copied:", extra_dir)
+    )
+  }
 })
 
-test_that("build_mac works with sourcing-app fixture", {
+test_that("build_mac works with sourcing-app fixture (make_app=FALSE legacy mode)", {
   skip_if_no_integration()
   skip_if_not_macos()
 
@@ -291,6 +301,7 @@ test_that("build_mac works with sourcing-app fixture", {
     entry_script = "app.R",
     output_dir = dist_dir,
     extra_dirs = c("R", "config"),
+    make_app = FALSE,  # Test legacy folder mode
     clean_on_error = FALSE
   )
 
@@ -323,6 +334,125 @@ test_that("build_mac creates zip archive when requested", {
   )
 
   expect_true(file.exists(zip_path))
+})
+
+# =============================================================================
+# macOS App Bundle (make_app = TRUE) Integration Tests
+# =============================================================================
+
+test_that("build_mac with make_app creates app bundle for minimal-app", {
+  skip_if_no_integration()
+  skip_if_not_macos()
+
+  fixture_path <- create_fixture_copy("minimal-app")
+  on.exit(cleanup_fixture_copy(fixture_path), add = TRUE)
+
+  dist_dir <- file.path(fixture_path, "dist")
+  on.exit(unlink(dist_dir, recursive = TRUE), add = TRUE)
+
+  result <- build_mac(
+    project_path = fixture_path,
+    entry_script = "app.R",
+    output_dir = dist_dir,
+    make_app = TRUE,
+    app_name = "MinimalApp",
+    clean_on_error = FALSE
+  )
+
+  expect_true(dir.exists(result))
+  expect_true(grepl("\\.app$", result))
+  
+  # Check app bundle structure
+  expect_true(dir.exists(file.path(result, "Contents")))
+  expect_true(dir.exists(file.path(result, "Contents", "MacOS")))
+  expect_true(dir.exists(file.path(result, "Contents", "Resources")))
+  expect_true(dir.exists(file.path(result, "Contents", "Frameworks")))
+  
+  # Check executable and launcher
+  expect_true(file.exists(file.path(result, "Contents", "MacOS", "MinimalApp")))
+  expect_true(file.exists(file.path(result, "Contents", "Resources", "launcher.sh")))
+  
+  # Check Info.plist
+  expect_true(file.exists(file.path(result, "Contents", "Info.plist")))
+  
+  # Check app files were copied
+  app_dir <- file.path(result, "Contents", "Resources", "app")
+  expect_true(dir.exists(app_dir))
+  expect_true(file.exists(file.path(app_dir, "app.R")))
+  
+  # Check library directory
+  expect_true(dir.exists(file.path(result, "Contents", "Resources", "library")))
+})
+
+test_that("build_mac with make_app copies extra_dirs correctly", {
+  skip_if_no_integration()
+  skip_if_not_macos()
+
+  fixture_path <- create_fixture_copy("standard-app")
+  on.exit(cleanup_fixture_copy(fixture_path), add = TRUE)
+
+  info <- get_fixture_info("standard-app")
+  dist_dir <- file.path(fixture_path, "dist")
+  on.exit(unlink(dist_dir, recursive = TRUE), add = TRUE)
+
+  result <- build_mac(
+    project_path = fixture_path,
+    entry_script = info$entry_script,
+    output_dir = dist_dir,
+    extra_dirs = info$extra_dirs,
+    make_app = TRUE,
+    app_name = "StandardApp",
+    clean_on_error = FALSE
+  )
+
+  expect_true(dir.exists(result))
+  
+  # Check app bundle structure
+  app_dir <- file.path(result, "Contents", "Resources", "app")
+  expect_true(dir.exists(app_dir))
+  
+  # Check entry script was copied
+  expect_true(file.exists(file.path(app_dir, info$entry_script)))
+  
+  # Check that extra_dirs were copied into the app directory
+  for (extra_dir in info$extra_dirs) {
+    expect_true(
+      dir.exists(file.path(app_dir, extra_dir)),
+      info = paste("Extra directory not copied to app bundle:", extra_dir)
+    )
+  }
+  
+  # Check specific files from extra_dirs
+  expect_true(file.exists(file.path(app_dir, "data", "sample.csv")))
+  expect_true(file.exists(file.path(app_dir, "models", "model_config.R")))
+})
+
+test_that("build_mac with make_app handles sourcing-app fixture", {
+  skip_if_no_integration()
+  skip_if_not_macos()
+
+  fixture_path <- create_fixture_copy("sourcing-app")
+  on.exit(cleanup_fixture_copy(fixture_path), add = TRUE)
+
+  dist_dir <- file.path(fixture_path, "dist")
+  on.exit(unlink(dist_dir, recursive = TRUE), add = TRUE)
+
+  result <- build_mac(
+    project_path = fixture_path,
+    entry_script = "app.R",
+    output_dir = dist_dir,
+    extra_dirs = c("R", "config"),
+    make_app = TRUE,
+    app_name = "SourcingApp",
+    clean_on_error = FALSE
+  )
+
+  expect_true(dir.exists(result))
+  
+  app_dir <- file.path(result, "Contents", "Resources", "app")
+  expect_true(dir.exists(file.path(app_dir, "R")))
+  expect_true(dir.exists(file.path(app_dir, "config")))
+  expect_true(file.exists(file.path(app_dir, "R", "utils.R")))
 })
 
 # =============================================================================

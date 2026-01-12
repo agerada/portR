@@ -63,7 +63,7 @@ get_fixture_info <- function(fixture_name) {
 
   # Check for extra directories
   all_dirs <- list.dirs(fixture_path, recursive = FALSE, full.names = FALSE)
-  extra_dirs <- setdiff(all_dirs, c("renv", "app"))
+  extra_dirs <- setdiff(all_dirs, c("renv", "app", "dist"))
 
   list(
     name = fixture_name,

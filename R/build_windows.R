@@ -183,11 +183,23 @@ extract_r_windows <- function(r_exe_path, dist_dir, deps) {
     if (ret == 0) {
       # innoextract creates an 'app' folder
       app_dir <- file.path(extract_dir, "app")
-      if (dir.exists(app_dir)) {
-        file.rename(app_dir, file.path(dist_dir, "R"))
-        extraction_done <- TRUE
-      } else if (check_r_extraction(extract_dir)) {
-        file.rename(extract_dir, file.path(dist_dir, "R"))
+      target_r_dir <- file.path(dist_dir, "R")
+      
+      # Determine source directory for R files
+      source_dir <- if (dir.exists(app_dir)) app_dir else if (check_r_extraction(extract_dir)) extract_dir else NULL
+      
+      if (!is.null(source_dir)) {
+        # If target R directory already exists (e.g., from extra_dirs), merge contents
+        if (dir.exists(target_r_dir)) {
+          # Copy extracted R files into existing directory, preserving user files
+          all_files <- list.files(source_dir, full.names = TRUE)
+          for (f in all_files) {
+            file.copy(f, target_r_dir, recursive = TRUE, overwrite = TRUE)
+          }
+        } else {
+          # No existing directory, just rename
+          file.rename(source_dir, target_r_dir)
+        }
         extraction_done <- TRUE
       }
     }
@@ -206,16 +218,31 @@ extract_r_windows <- function(r_exe_path, dist_dir, deps) {
     ret <- system(cmd)
 
     if (ret == 0 && check_r_extraction(temp_dir)) {
+      target_r_dir <- file.path(dist_dir, "R")
+      
+      # Determine the source R directory
       if (dir.exists(file.path(temp_dir, "bin"))) {
-        file.rename(temp_dir, file.path(dist_dir, "R"))
+        source_dir <- temp_dir
       } else {
         subdirs <- list.dirs(temp_dir, recursive = FALSE)
         r_dir <- subdirs[grep("R-", basename(subdirs))]
-        if (length(r_dir) > 0) {
-          file.rename(r_dir[1], file.path(dist_dir, "R"))
-        }
+        source_dir <- if (length(r_dir) > 0) r_dir[1] else NULL
       }
-      extraction_done <- TRUE
+      
+      if (!is.null(source_dir)) {
+        # If target R directory already exists (e.g., from extra_dirs), merge contents
+        if (dir.exists(target_r_dir)) {
+          # Copy extracted R files into existing directory, preserving user files
+          all_files <- list.files(source_dir, full.names = TRUE)
+          for (f in all_files) {
+            file.copy(f, target_r_dir, recursive = TRUE, overwrite = TRUE)
+          }
+        } else {
+          # No existing directory, just rename
+          file.rename(source_dir, target_r_dir)
+        }
+        extraction_done <- TRUE
+      }
     }
     if (dir.exists(temp_dir)) unlink(temp_dir, recursive = TRUE)
   }
