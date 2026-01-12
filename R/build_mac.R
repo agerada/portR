@@ -31,6 +31,10 @@
 #' @param make_app Whether to create a macOS application bundle (.app) that can be
 #'   copied to /Applications/. If FALSE, creates a portable folder structure.
 #'   Defaults to TRUE.
+#' @param use_electron Whether to use an Electron wrapper for the app bundle.
+#'   When TRUE, the app runs as a native window instead of opening Terminal and
+#'   browser. Requires make_app = TRUE. Downloads the latest Electron binaries
+#'   automatically. Defaults to FALSE.
 #'
 #' @return Invisibly returns the path to the distribution directory.
 #'
@@ -78,6 +82,14 @@
 #'   project_path = "path/to/my/shiny/app"
 #'   # entry_script can be NULL if ui.R and server.R exist
 #' )
+#'
+#' # Create Electron app (native window, no Terminal/browser)
+#' build_mac(
+#'   project_path = "path/to/my/shiny/app",
+#'   entry_script = "app.R",
+#'   app_name = "MyShinyApp",
+#'   use_electron = TRUE
+#' )
 #' }
 build_mac <- function(project_path,
                       entry_script = NULL,
@@ -92,7 +104,13 @@ build_mac <- function(project_path,
                       shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
                       clean_on_error = TRUE,
                       app_name = "ShinyApp",
-                      make_app = TRUE) {
+                      make_app = TRUE,
+                      use_electron = FALSE) {
+
+  # Validate electron option
+  if (use_electron && !make_app) {
+    stop("use_electron = TRUE requires make_app = TRUE")
+  }
 
   # Determine architecture
   if (is.null(arch)) {
@@ -135,7 +153,16 @@ build_mac <- function(project_path,
     deps <- check_system_deps("mac")
 
     # Step 3: Setup distribution directory
-    if (make_app) {
+    if (use_electron) {
+      message("\n=== Step 3: Setting up Electron app bundle ===")
+      # Ensure dist_dir exists
+      if (!dir.exists(dist_dir)) {
+        dir.create(dist_dir, recursive = TRUE)
+      }
+      # Map arch for Electron
+      electron_arch <- if (arch == "arm64") "arm64" else "x64"
+      app_bundle_path <- setup_electron_shiny_app(dist_dir, app_name, electron_arch)
+    } else if (make_app) {
       message("\n=== Step 3: Setting up macOS application bundle ===")
       setup_mac_app_bundle(dist_dir, app_name)
     } else {
@@ -145,7 +172,10 @@ build_mac <- function(project_path,
 
     # Step 4: Copy app files
     message("\n=== Step 4: Copying app files ===")
-    if (make_app) {
+    if (use_electron) {
+      app_bundle_path <- file.path(dist_dir, paste0(app_name, ".app"))
+      copy_app_files_electron(project_path, app_bundle_path, entry_script, extra_dirs)
+    } else if (make_app) {
       copy_app_files_mac(project_path, dist_dir, entry_script, extra_dirs, app_name)
     } else {
       copy_app_files(project_path, dist_dir, entry_script, extra_dirs)
@@ -162,7 +192,10 @@ build_mac <- function(project_path,
 
     # Step 6: Extract R
     message("\n=== Step 6: Extracting R ===")
-    if (make_app) {
+    if (use_electron) {
+      app_bundle_path <- file.path(dist_dir, paste0(app_name, ".app"))
+      extract_r_electron(r_pkg_path, app_bundle_path)
+    } else if (make_app) {
       extract_r_mac_app(r_pkg_path, dist_dir, app_name)
     } else {
       extract_r_mac(r_pkg_path, dist_dir)
@@ -170,7 +203,16 @@ build_mac <- function(project_path,
 
     # Step 7: Download packages
     message("\n=== Step 7: Downloading macOS packages ===")
-    if (make_app) {
+    if (use_electron) {
+      app_bundle_path <- file.path(dist_dir, paste0(app_name, ".app"))
+      download_packages_electron(
+        project_path = project_path,
+        app_bundle_path = app_bundle_path,
+        r_version_minor = r_version_minor,
+        fallback_r_version = fallback_r_version,
+        arch = arch
+      )
+    } else if (make_app) {
       download_packages_mac_app(
         project_path = project_path,
         dist_dir = dist_dir,
@@ -190,7 +232,10 @@ build_mac <- function(project_path,
     }
 
     # Step 8: Create launcher
-    if (make_app) {
+    if (use_electron) {
+      message("\n=== Step 8: Electron app ready (main.js already created) ===")
+      # Electron's main.js was already created in setup_electron_shiny_app
+    } else if (make_app) {
       message("\n=== Step 8: Creating macOS app launcher ===")
       create_mac_app_launcher(dist_dir, entry_script, shiny_command, app_name)
     } else {
@@ -205,7 +250,10 @@ build_mac <- function(project_path,
     }
 
     message("\n=== Build complete! ===")
-    if (make_app) {
+    if (use_electron) {
+      message("Electron app bundle created in: ", file.path(dist_dir, paste0(app_name, ".app")))
+      message("Note: The app runs as a native window - no Terminal or browser required!")
+    } else if (make_app) {
       message("macOS application bundle created in: ", file.path(dist_dir, paste0(app_name, ".app")))
     } else {
       message("Portable folder created in: ", dist_dir)
@@ -1407,4 +1455,767 @@ create_mac_launcher <- function(dist_dir, entry_script, shiny_command) {
   message("Created double-click launcher: Run Application.command")
 
   invisible(script_path)
+}
+
+# ============================================================================
+# Electron Wrapper Functions
+# ============================================================================
+
+#' Get latest Electron release version from GitHub
+#'
+#' Fetches the latest stable Electron version from GitHub releases API.
+#'
+#' @return Character string with version (e.g., "39.2.7")
+#' @keywords internal
+get_latest_electron_version <- function() {
+  url <- "https://api.github.com/repos/electron/electron/releases/latest"
+  
+  tryCatch({
+    response <- readLines(url, warn = FALSE)
+    json_text <- paste(response, collapse = "")
+    
+    # Extract tag_name using regex (avoiding jsonlite dependency)
+    tag_match <- regmatches(json_text, regexpr('"tag_name"\\s*:\\s*"v([^"]+)"', json_text))
+    if (length(tag_match) == 0) {
+      stop("Could not parse Electron version from GitHub API")
+    }
+    
+    # Extract version number (remove "v" prefix)
+    version <- gsub('.*"v([^"]+)".*', '\\1', tag_match)
+    message("Latest Electron version: ", version)
+    return(version)
+  }, error = function(e) {
+    stop("Failed to fetch latest Electron version: ", e$message)
+  })
+}
+
+#' Download Electron binary for macOS
+#'
+#' Downloads the prebuilt Electron binary for the specified architecture.
+#'
+#' @param version Electron version (e.g., "39.2.7"). If NULL, fetches latest.
+#' @param arch Architecture: "arm64" or "x64"
+#' @return Path to downloaded zip file
+#' @keywords internal
+download_electron_binary <- function(version = NULL, arch = "arm64") {
+  if (is.null(version)) {
+    version <- get_latest_electron_version()
+  }
+  
+  # Map arch names
+  electron_arch <- if (arch == "arm64") "arm64" else "x64"
+  
+  filename <- paste0("electron-v", version, "-darwin-", electron_arch, ".zip")
+  url <- paste0("https://github.com/electron/electron/releases/download/v",
+                version, "/", filename)
+  
+  dest_path <- file.path(tempdir(), filename)
+  
+  # Check if already downloaded
+
+  if (file.exists(dest_path) && file.info(dest_path)$size > 1000000) {
+    message("Using cached Electron binary: ", dest_path)
+    return(dest_path)
+  }
+  
+  message("Downloading Electron ", version, " for ", arch, "...")
+  message("URL: ", url)
+  download.file(url, dest_path, mode = "wb", quiet = FALSE)
+  
+  if (!file.exists(dest_path) || file.info(dest_path)$size < 1000000) {
+    stop("Failed to download Electron binary")
+  }
+  
+  message("Electron binary downloaded: ", dest_path)
+  return(dest_path)
+}
+
+#' Setup Electron app bundle structure
+#'
+#' Extracts Electron and rebrands it for the Shiny app.
+#'
+#' @param dist_dir Distribution directory
+#' @param app_name Application name
+#' @param arch Architecture
+#' @return Path to the Electron app bundle
+#' @keywords internal
+setup_electron_app <- function(dist_dir, app_name, arch = "arm64") {
+  message("Setting up Electron app bundle...")
+  
+  # Download Electron
+  electron_zip <- download_electron_binary(version = NULL, arch = arch)
+  
+  # Create temp extraction directory
+  extract_dir <- tempfile("electron_extract_")
+  dir.create(extract_dir, recursive = TRUE)
+  
+  # Extract Electron zip using system unzip to preserve permissions
+  message("Extracting Electron...")
+  # Use system unzip instead of R's unzip() to preserve executable permissions
+  result <- system2("unzip", args = c("-q", "-o", shQuote(electron_zip), "-d", shQuote(extract_dir)),
+                    stdout = TRUE, stderr = TRUE)
+  
+  # The extracted structure contains Electron.app
+  electron_app_src <- file.path(extract_dir, "Electron.app")
+  if (!dir.exists(electron_app_src)) {
+    stop("Electron.app not found in extracted archive")
+  }
+  
+  # Target app bundle path
+  app_bundle_path <- file.path(dist_dir, paste0(app_name, ".app"))
+  
+  # Remove existing app bundle if it exists
+  if (dir.exists(app_bundle_path)) {
+    unlink(app_bundle_path, recursive = TRUE)
+  }
+  
+  # Use cp -R to preserve permissions (file.copy doesn't preserve them properly on macOS)
+  message("Creating ", app_name, ".app from Electron template...")
+  system2("cp", args = c("-R", shQuote(electron_app_src), shQuote(app_bundle_path)),
+          stdout = TRUE, stderr = TRUE)
+  
+  # Rebrand the app
+  rebrand_electron_app(app_bundle_path, app_name)
+  
+  # Cleanup
+  unlink(extract_dir, recursive = TRUE)
+  
+  message("Electron app bundle created: ", app_bundle_path)
+  return(app_bundle_path)
+}
+
+#' Rebrand Electron app with custom name
+#'
+#' Updates Info.plist files and renames executables for rebranding.
+#'
+#' @param app_bundle_path Path to the .app bundle
+#' @param app_name New application name
+#' @keywords internal
+rebrand_electron_app <- function(app_bundle_path, app_name) {
+  contents_dir <- file.path(app_bundle_path, "Contents")
+  macos_dir <- file.path(contents_dir, "MacOS")
+  frameworks_dir <- file.path(contents_dir, "Frameworks")
+  
+
+  # Update main Info.plist
+  main_plist <- file.path(contents_dir, "Info.plist")
+  if (file.exists(main_plist)) {
+    plist_content <- readLines(main_plist, warn = FALSE)
+    plist_text <- paste(plist_content, collapse = "\n")
+    
+    # Replace bundle identifiers and names
+    plist_text <- gsub("com\\.electron\\.electron", 
+                       paste0("com.portr.", gsub("[^a-zA-Z0-9]", "", tolower(app_name))),
+                       plist_text)
+    plist_text <- gsub("Electron", app_name, plist_text)
+    
+    writeLines(plist_text, main_plist)
+  }
+  
+  # Rename main executable
+  old_exe <- file.path(macos_dir, "Electron")
+  new_exe <- file.path(macos_dir, app_name)
+  if (file.exists(old_exe)) {
+    file.rename(old_exe, new_exe)
+  }
+  
+  # Update helper apps
+  helper_names <- c("Electron Helper", "Electron Helper (GPU)", 
+                    "Electron Helper (Plugin)", "Electron Helper (Renderer)")
+  
+  for (helper_name in helper_names) {
+    old_helper_app <- file.path(frameworks_dir, paste0(helper_name, ".app"))
+    if (dir.exists(old_helper_app)) {
+      new_helper_name <- gsub("Electron", app_name, helper_name)
+      new_helper_app <- file.path(frameworks_dir, paste0(new_helper_name, ".app"))
+      
+      # Rename the helper app directory
+      file.rename(old_helper_app, new_helper_app)
+      
+      # Update helper's Info.plist
+      helper_plist <- file.path(new_helper_app, "Contents", "Info.plist")
+      if (file.exists(helper_plist)) {
+        plist_content <- readLines(helper_plist, warn = FALSE)
+        plist_text <- paste(plist_content, collapse = "\n")
+        plist_text <- gsub("com\\.electron\\.electron", 
+                           paste0("com.portr.", gsub("[^a-zA-Z0-9]", "", tolower(app_name))),
+                           plist_text)
+        plist_text <- gsub("Electron", app_name, plist_text)
+        writeLines(plist_text, helper_plist)
+      }
+      
+      # Rename helper executable
+      helper_macos <- file.path(new_helper_app, "Contents", "MacOS")
+      old_helper_exe <- file.path(helper_macos, helper_name)
+      new_helper_exe <- file.path(helper_macos, new_helper_name)
+      if (file.exists(old_helper_exe)) {
+        file.rename(old_helper_exe, new_helper_exe)
+      }
+    }
+  }
+  
+  # Ensure all executables have proper permissions
+  # This is critical for macOS to allow launching the app
+  message("Setting executable permissions...")
+  system2("chmod", args = c("+x", shQuote(new_exe)), stdout = FALSE, stderr = FALSE)
+  
+  # Also fix helper executables
+  helper_patterns <- c("Helper", "Helper (GPU)", "Helper (Plugin)", "Helper (Renderer)")
+  for (pattern in helper_patterns) {
+    helper_exe <- file.path(frameworks_dir, paste0(app_name, " ", pattern, ".app"),
+                            "Contents", "MacOS", paste0(app_name, " ", pattern))
+    if (file.exists(helper_exe)) {
+      system2("chmod", args = c("+x", shQuote(helper_exe)), stdout = FALSE, stderr = FALSE)
+    }
+  }
+  
+  message("App rebranded to: ", app_name)
+}
+
+#' Create Electron main.js for Shiny app
+#'
+#' Creates the main.js file that launches R/Shiny and opens a browser window.
+#'
+#' @param app_bundle_path Path to the .app bundle
+#' @param app_name Application name
+#' @param shiny_port Port for the Shiny app (default 1984)
+#' @keywords internal
+create_electron_main_js <- function(app_bundle_path, app_name, shiny_port = 1984) {
+  contents_dir <- file.path(app_bundle_path, "Contents")
+  resources_dir <- file.path(contents_dir, "Resources")
+  
+  # Create our custom app directory inside Resources
+  electron_app_dir <- file.path(resources_dir, "app")
+  if (!dir.exists(electron_app_dir)) {
+    dir.create(electron_app_dir, recursive = TRUE)
+  }
+  
+  # Create package.json
+  package_json <- paste0('{
+  "name": "', gsub("[^a-zA-Z0-9]", "-", tolower(app_name)), '",
+  "version": "1.0.0",
+  "main": "main.js",
+  "description": "', app_name, ' - Built with portR"
+}')
+  writeLines(package_json, file.path(electron_app_dir, "package.json"))
+  
+  # Create main.js
+  main_js <- paste0('// ', app_name, ' - Electron wrapper for Shiny app
+// Built with portR
+
+const { app, BrowserWindow, dialog } = require("electron");
+const { spawn } = require("child_process");
+const path = require("path");
+const http = require("http");
+
+let mainWindow = null;
+let rProcess = null;
+const SHINY_PORT = ', shiny_port, ';
+const SHINY_URL = `http://127.0.0.1:${SHINY_PORT}`;
+
+// Paths relative to the app bundle
+// app.getAppPath() returns /path/to/App.app/Contents/Resources/app
+// So we need to go up TWO levels to get to Contents
+const appPath = app.getAppPath();  // .../Contents/Resources/app
+const resourcesDir = path.dirname(appPath);  // .../Contents/Resources
+const contentsDir = path.dirname(resourcesDir);  // .../Contents
+const frameworksDir = path.join(contentsDir, "Frameworks");
+
+// R framework paths
+const rFramework = path.join(frameworksDir, "R.framework");
+const rHome = path.join(rFramework, "Resources");
+const rBin = path.join(rHome, "bin", "R");
+const rLibrary = path.join(resourcesDir, "library");
+const shinyAppDir = path.join(resourcesDir, "shiny_app");
+
+function log(message) {
+  const timestamp = new Date().toISOString();
+  console.log(`[${timestamp}] ${message}`);
+}
+
+function startShiny() {
+  return new Promise((resolve, reject) => {
+    log("Starting R/Shiny process...");
+    log(`R binary: ${rBin}`);
+    log(`R_HOME: ${rHome}`);
+    log(`Library: ${rLibrary}`);
+    log(`App dir: ${shinyAppDir}`);
+    
+    // Set up environment for R
+    const env = Object.assign({}, process.env, {
+      R_HOME: rHome,
+      R_LIBS_USER: rLibrary,
+      R_LIBS: rLibrary,
+      // Prevent R from trying to use system library
+      R_LIBS_SITE: "",
+      // Disable R user profile
+      R_PROFILE_USER: "",
+      // Set locale to avoid issues
+      LC_ALL: "en_US.UTF-8"
+    });
+    
+    // R command to run Shiny
+    const rCommand = `.libPaths(c("${rLibrary.replace(/\\\\/g, "/")}", .libPaths())); shiny::runApp("${shinyAppDir.replace(/\\\\/g, "/")}", port=${SHINY_PORT}, launch.browser=FALSE, host="127.0.0.1")`;
+    
+    log(`R command: ${rCommand}`);
+    
+    rProcess = spawn(rBin, ["--vanilla", "-e", rCommand], {
+      env: env,
+      cwd: shinyAppDir,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    
+    rProcess.stdout.on("data", (data) => {
+      log(`R stdout: ${data.toString().trim()}`);
+    });
+    
+    rProcess.stderr.on("data", (data) => {
+      const message = data.toString().trim();
+      log(`R stderr: ${message}`);
+      // Check if Shiny is ready
+      if (message.includes("Listening on")) {
+        log("Shiny is ready!");
+        resolve();
+      }
+    });
+    
+    rProcess.on("error", (err) => {
+      log(`R process error: ${err.message}`);
+      reject(err);
+    });
+    
+    rProcess.on("exit", (code, signal) => {
+      log(`R process exited with code ${code}, signal ${signal}`);
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        app.quit();
+      }
+    });
+    
+    // Also poll the port in case we miss the "Listening on" message
+    const startTime = Date.now();
+    const timeout = 60000; // 60 seconds timeout
+    
+    const checkPort = () => {
+      if (Date.now() - startTime > timeout) {
+        reject(new Error("Timeout waiting for Shiny to start"));
+        return;
+      }
+      
+      const req = http.get(SHINY_URL, (res) => {
+        log("Shiny responded on port " + SHINY_PORT);
+        resolve();
+      });
+      
+      req.on("error", () => {
+        // Not ready yet, try again
+        setTimeout(checkPort, 500);
+      });
+      
+      req.setTimeout(1000, () => {
+        req.destroy();
+        setTimeout(checkPort, 500);
+      });
+    };
+    
+    // Start polling after a short delay
+    setTimeout(checkPort, 2000);
+  });
+}
+
+function createWindow() {
+  log("Creating main window...");
+  
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    title: "', app_name, '",
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true
+    },
+    show: false
+  });
+  
+  mainWindow.once("ready-to-show", () => {
+    mainWindow.show();
+    log("Window displayed");
+  });
+  
+  mainWindow.loadURL(SHINY_URL);
+  
+  mainWindow.on("closed", () => {
+    log("Main window closed");
+    mainWindow = null;
+    // Kill R process when window is closed
+    if (rProcess) {
+      log("Terminating R process...");
+      rProcess.kill("SIGTERM");
+      rProcess = null;
+    }
+  });
+  
+  // Handle load errors
+  mainWindow.webContents.on("did-fail-load", (event, errorCode, errorDescription) => {
+    log(`Page load failed: ${errorDescription} (${errorCode})`);
+    // Retry after a delay
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(SHINY_URL);
+      }
+    }, 1000);
+  });
+}
+
+app.whenReady().then(async () => {
+  log("Electron app ready");
+  log(`App path: ${app.getAppPath()}`);
+  log(`Contents dir: ${contentsDir}`);
+  
+  try {
+    await startShiny();
+    createWindow();
+  } catch (err) {
+    log(`Failed to start Shiny: ${err.message}`);
+    dialog.showErrorBox("Application Error", 
+      `Failed to start the application:\\n\\n${err.message}\\n\\nPlease check the console for more details.`);
+    app.quit();
+  }
+});
+
+app.on("window-all-closed", () => {
+  log("All windows closed");
+  if (rProcess) {
+    log("Terminating R process...");
+    rProcess.kill("SIGTERM");
+    rProcess = null;
+  }
+  app.quit();
+});
+
+app.on("before-quit", () => {
+  log("App quitting...");
+  if (rProcess) {
+    rProcess.kill("SIGTERM");
+    rProcess = null;
+  }
+});
+
+// Handle uncaught exceptions
+process.on("uncaughtException", (err) => {
+  log(`Uncaught exception: ${err.message}`);
+  if (rProcess) {
+    rProcess.kill("SIGTERM");
+  }
+});
+')
+  
+  writeLines(main_js, file.path(electron_app_dir, "main.js"))
+  message("Created Electron main.js")
+  
+  invisible(electron_app_dir)
+}
+
+#' Setup Electron app with embedded R and Shiny
+#'
+#' Complete setup of an Electron-based Shiny app.
+#'
+#' @param dist_dir Distribution directory
+#' @param app_name Application name
+#' @param arch Architecture
+#' @param shiny_port Shiny port number
+#' @return Path to the app bundle
+#' @keywords internal
+setup_electron_shiny_app <- function(dist_dir, app_name, arch = "arm64", shiny_port = 1984) {
+  # Step 1: Setup Electron app bundle
+  app_bundle_path <- setup_electron_app(dist_dir, app_name, arch)
+  
+  # Step 2: Create main.js
+  create_electron_main_js(app_bundle_path, app_name, shiny_port)
+  
+  return(app_bundle_path)
+}
+
+#' Copy app files for Electron wrapper
+#'
+#' Copies Shiny app files to the Electron app bundle's Resources directory.
+#'
+#' @param project_path Source project path
+#' @param app_bundle_path Path to the .app bundle
+#' @param entry_script Entry script name
+#' @param extra_dirs Extra directories to copy
+#' @keywords internal
+copy_app_files_electron <- function(project_path, app_bundle_path, entry_script, extra_dirs) {
+  resources_dir <- file.path(app_bundle_path, "Contents", "Resources")
+  shiny_app_dir <- file.path(resources_dir, "shiny_app")
+  
+  if (!dir.exists(shiny_app_dir)) {
+    dir.create(shiny_app_dir, recursive = TRUE)
+  }
+  
+  # Copy entry script
+  if (!is.null(entry_script) && file.exists(file.path(project_path, entry_script))) {
+    # Copy entry script preserving directory structure
+    entry_dir <- dirname(entry_script)
+    if (entry_dir != "." && entry_dir != "") {
+      target_entry_dir <- file.path(shiny_app_dir, entry_dir)
+      if (!dir.exists(target_entry_dir)) {
+        dir.create(target_entry_dir, recursive = TRUE)
+      }
+    }
+    file.copy(file.path(project_path, entry_script),
+              file.path(shiny_app_dir, entry_script),
+              overwrite = TRUE)
+    message("Copied entry script: ", entry_script)
+  }
+  
+  # Copy standard Shiny app files and directories
+  # Include 'app' directory as it's a common pattern for multi-file Shiny apps
+  shiny_files <- c("ui.R", "server.R", "global.R", "app.R", "www", "R", "app")
+  for (f in shiny_files) {
+    src <- file.path(project_path, f)
+    if (file.exists(src) || dir.exists(src)) {
+      file.copy(src, shiny_app_dir, recursive = TRUE, overwrite = TRUE)
+      message("Copied: ", f)
+    }
+  }
+  
+  # Copy extra directories
+  if (!is.null(extra_dirs)) {
+    for (d in extra_dirs) {
+      src_dir <- file.path(project_path, d)
+      if (dir.exists(src_dir)) {
+        file.copy(src_dir, shiny_app_dir, recursive = TRUE, overwrite = TRUE)
+        message("Copied extra directory: ", d)
+      }
+    }
+  }
+  
+  message("App files copied to: ", shiny_app_dir)
+  invisible(shiny_app_dir)
+}
+
+#' Extract R for Electron app
+#'
+#' Extracts R.framework into the Electron app's Frameworks directory.
+#'
+#' @param r_pkg_path Path to R .pkg file
+#' @param app_bundle_path Path to the .app bundle
+#' @keywords internal
+extract_r_electron <- function(r_pkg_path, app_bundle_path) {
+  contents_dir <- file.path(app_bundle_path, "Contents")
+  frameworks_dir <- file.path(contents_dir, "Frameworks")
+  
+  if (!dir.exists(frameworks_dir)) {
+    dir.create(frameworks_dir, recursive = TRUE)
+  }
+  
+  message("Extracting R.framework to Electron app...")
+  
+  extraction_done <- FALSE
+  
+ # pkgutil --expand requires the target directory to NOT exist
+  # Use a unique temp directory name
+  temp_dir <- file.path(tempdir(), paste0("R_temp_pkg_", format(Sys.time(), "%H%M%S")))
+  if (dir.exists(temp_dir)) unlink(temp_dir, recursive = TRUE)
+
+  # Use pkgutil to expand the package
+  message("Expanding .pkg with pkgutil...")
+  cmd <- paste("pkgutil --expand", shQuote(r_pkg_path), shQuote(temp_dir))
+  ret <- system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+
+  if (ret != 0) {
+    # pkgutil failed - try alternative approach with xar
+    message("pkgutil failed, trying xar...")
+    dir.create(temp_dir)
+    cmd <- paste("cd", shQuote(temp_dir), "&& xar -xf", shQuote(r_pkg_path))
+    ret <- system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+
+    if (ret != 0) {
+      unlink(temp_dir, recursive = TRUE)
+      stop("Both pkgutil and xar failed to expand R package. ",
+           "You may need to extract R manually from: ", r_pkg_path)
+    }
+  }
+
+  # Find the R-fw.pkg component (which contains R.framework)
+  # Important: R-fw.pkg has the framework, R-app.pkg just has the R.app GUI
+  pkg_components <- list.dirs(temp_dir, recursive = FALSE)
+  
+  # Prefer R-fw.pkg specifically (contains R.framework)
+  r_component <- pkg_components[grepl("R-fw", basename(pkg_components))]
+  
+  if (length(r_component) == 0) {
+    # Fall back to R-app if no R-fw found
+    r_component <- pkg_components[grepl("R-app", basename(pkg_components))]
+  }
+
+  if (length(r_component) == 0) {
+    # Try looking for Payload directly
+    r_component <- temp_dir
+  } else {
+    r_component <- r_component[1]
+  }
+
+  # Extract Payload
+  payload_path <- file.path(r_component, "Payload")
+  if (!file.exists(payload_path)) {
+    # Maybe there's a Scripts directory and Payload is elsewhere
+    payloads <- list.files(temp_dir, pattern = "Payload", recursive = TRUE,
+                           full.names = TRUE)
+    if (length(payloads) > 0) {
+      payload_path <- payloads[1]
+    }
+  }
+
+  if (file.exists(payload_path)) {
+    r_extract_dir <- file.path(tempdir(), "R_extracted_electron")
+    if (dir.exists(r_extract_dir)) unlink(r_extract_dir, recursive = TRUE)
+    dir.create(r_extract_dir)
+
+    message("Extracting Payload...")
+    # Payload is a cpio.gz or cpio.xz archive
+    # Try gunzip first, then xz if that fails
+    cmd <- paste("cd", shQuote(r_extract_dir), "&&",
+                 "cat", shQuote(payload_path), "| gunzip -c 2>/dev/null | cpio -id 2>/dev/null",
+                 "|| cat", shQuote(payload_path), "| xz -d 2>/dev/null | cpio -id 2>/dev/null",
+                 "|| cat", shQuote(payload_path), "| cpio -id 2>/dev/null")
+    ret <- system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
+
+    # R.framework can be in different locations depending on the pkg structure:
+    # - Directly as R.framework (newer packages)
+    # - Under Library/Frameworks/R.framework (older packages)
+    r_framework <- NULL
+    possible_locations <- c(
+      file.path(r_extract_dir, "R.framework"),
+      file.path(r_extract_dir, "Library", "Frameworks", "R.framework")
+    )
+
+    for (loc in possible_locations) {
+      if (dir.exists(loc)) {
+        r_framework <- loc
+        break
+      }
+    }
+
+    if (!is.null(r_framework)) {
+      message("Found R.framework, copying to Electron app...")
+      # Copy the framework to Frameworks directory
+      file.copy(r_framework, frameworks_dir, recursive = TRUE)
+      extraction_done <- TRUE
+
+      # Verify the Resources directory exists
+      resources <- file.path(frameworks_dir, "R.framework", "Resources")
+      if (dir.exists(resources)) {
+        message("R framework extracted successfully.")
+        
+        # Fix R.framework to be relocatable
+        message("Making R.framework relocatable...")
+        fix_r_framework_paths(file.path(frameworks_dir, "R.framework"))
+      }
+    }
+    unlink(r_extract_dir, recursive = TRUE)
+  }
+
+  # Cleanup
+  unlink(temp_dir, recursive = TRUE)
+
+  if (extraction_done) {
+    message("R extracted successfully to Electron app.")
+    unlink(r_pkg_path)
+  } else {
+    stop("Failed to extract R.framework from package. ",
+         "The .pkg file is at: ", r_pkg_path)
+  }
+
+  invisible(file.path(frameworks_dir, "R.framework"))
+}
+
+#' Fix R.framework paths for Electron app portability
+#'
+#' @param r_framework_path Path to R.framework
+#' @keywords internal
+fix_r_framework_paths_electron <- function(r_framework_path) {
+  message("Fixing R.framework paths for portability...")
+  
+  # Find the versioned Resources directory
+  versions_dir <- file.path(r_framework_path, "Versions")
+  if (!dir.exists(versions_dir)) {
+    warning("Could not find Versions directory in R.framework")
+    return(invisible(FALSE))
+  }
+  
+  # Get the version directory (e.g., "4.5-arm64")
+  version_dirs <- list.dirs(versions_dir, recursive = FALSE)
+  if (length(version_dirs) == 0) {
+    warning("No version directories found in R.framework/Versions")
+    return(invisible(FALSE))
+  }
+  
+  resources_dir <- file.path(version_dirs[1], "Resources")
+  if (!dir.exists(resources_dir)) {
+    warning("Could not find Resources directory")
+    return(invisible(FALSE))
+  }
+  
+  bin_dir <- file.path(resources_dir, "bin")
+  
+  # Fix scripts in bin directory
+  scripts_to_fix <- c("R", "Rscript")
+  for (script_name in scripts_to_fix) {
+    script_path <- file.path(bin_dir, script_name)
+    if (file.exists(script_path)) {
+      # Read content as bytes to handle potential binary data
+      content <- readBin(script_path, "raw", file.info(script_path)$size)
+      text_content <- rawToChar(content)
+      
+      # Check if it's a text file (shell script)
+      first_line <- strsplit(text_content, "\n", fixed = TRUE)[[1]][1]
+      if (grepl("^#!", first_line) && nchar(first_line, type = "bytes") > 0 && nchar(first_line, type = "bytes") < 100) {
+        # Replace hardcoded paths with portable alternatives
+        fixed_content <- gsub("/Library/Frameworks/R.framework",
+                             '${R_HOME}/../..', text_content, useBytes = TRUE)
+        fixed_content <- gsub('/Library/Frameworks/R\\.framework/Resources',
+                             '${R_HOME}', fixed_content, useBytes = TRUE)
+        
+        # Write back
+        writeLines(fixed_content, script_path, useBytes = TRUE)
+        message("Fixed paths in: ", script_name)
+      }
+    }
+  }
+  
+  message("R.framework paths fixed for portability.")
+  invisible(TRUE)
+}
+
+#' Download packages for Electron app
+#'
+#' Downloads R packages to the Electron app's Resources/library directory.
+#'
+#' @param project_path Project path with renv.lock
+#' @param app_bundle_path Path to the .app bundle
+#' @param r_version_minor R version for package compatibility
+#' @param fallback_r_version Fallback R version
+#' @param arch Architecture
+#' @keywords internal
+download_packages_electron <- function(project_path, app_bundle_path, 
+                                        r_version_minor, fallback_r_version,
+                                        arch = "arm64") {
+  resources_dir <- file.path(app_bundle_path, "Contents", "Resources")
+  library_dir <- file.path(resources_dir, "library")
+  
+  if (!dir.exists(library_dir)) {
+    dir.create(library_dir, recursive = TRUE)
+  }
+  
+  # Use existing download logic
+  download_packages_mac(
+    project_path = project_path,
+    dist_dir = resources_dir,
+    r_version_minor = r_version_minor,
+    fallback_r_version = fallback_r_version,
+    arch = arch
+  )
+  
+  invisible(library_dir)
 }

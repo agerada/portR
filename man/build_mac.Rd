@@ -18,7 +18,8 @@ build_mac(
   shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
   clean_on_error = TRUE,
   app_name = "ShinyApp",
-  make_app = TRUE
+  make_app = TRUE,
+  use_electron = FALSE
 )
 }
 \arguments{
@@ -62,6 +63,11 @@ Only used when make_app = TRUE. Defaults to "ShinyApp".}
 \item{make_app}{Whether to create a macOS application bundle (.app) that can be
 copied to /Applications/. If FALSE, creates a portable folder structure.
 Defaults to TRUE.}
+
+\item{use_electron}{Whether to use an Electron wrapper for the app bundle.
+When TRUE, the app runs as a native window instead of opening Terminal and
+browser. Requires make_app = TRUE. Downloads the latest Electron binaries
+automatically. Defaults to FALSE.}
 }
 \value{
 Invisibly returns the path to the distribution directory.
@@ -117,6 +123,14 @@ build_mac(
 build_mac(
   project_path = "path/to/my/shiny/app"
   # entry_script can be NULL if ui.R and server.R exist
+)
+
+# Create Electron app (native window, no Terminal/browser)
+build_mac(
+  project_path = "path/to/my/shiny/app",
+  entry_script = "app.R",
+  app_name = "MyShinyApp",
+  use_electron = TRUE
 )
 }
 }

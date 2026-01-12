@@ -223,3 +223,153 @@ test_that("launcher script has no external path dependencies", {
               grepl("R_HOME_DIR.*R_FRAMEWORK", content))
 })
 
+# ============================================================================
+# Electron Wrapper Tests
+# ============================================================================
+
+test_that("use_electron requires make_app = TRUE", {
+  temp_dir <- file.path(tempdir(), "test_electron_make_app")
+  dir.create(temp_dir, recursive = TRUE)
+  writeLines("# app", file.path(temp_dir, "app.R"))
+  writeLines('{"R": {}, "Packages": {}}', file.path(temp_dir, "renv.lock"))
+  on.exit(unlink(temp_dir, recursive = TRUE))
+  
+  expect_error(
+    build_mac(temp_dir, "app.R", use_electron = TRUE, make_app = FALSE),
+    "use_electron = TRUE requires make_app = TRUE"
+  )
+})
+
+test_that("get_latest_electron_version returns valid version string", {
+  skip_on_cran()
+  skip_if_offline()
+  
+  version <- get_latest_electron_version()
+  
+  # Should be a version string like "39.2.7" or similar
+  expect_type(version, "character")
+  expect_match(version, "^\\d+\\.\\d+\\.\\d+$")
+})
+
+test_that("create_electron_main_js creates valid main.js and package.json", {
+  app_bundle_path <- file.path(tempdir(), "TestElectronApp.app")
+  resources_dir <- file.path(app_bundle_path, "Contents", "Resources")
+  dir.create(resources_dir, recursive = TRUE)
+  on.exit(unlink(app_bundle_path, recursive = TRUE))
+  
+  create_electron_main_js(app_bundle_path, "TestElectronApp", 1984)
+  
+  app_dir <- file.path(resources_dir, "app")
+  
+  # Check package.json exists and is valid
+  pkg_json_path <- file.path(app_dir, "package.json")
+  expect_true(file.exists(pkg_json_path))
+  
+  pkg_content <- readLines(pkg_json_path)
+  expect_true(any(grepl('"name"', pkg_content)))
+  expect_true(any(grepl('"main": "main.js"', pkg_content)))
+  
+  # Check main.js exists and contains key elements
+  main_js_path <- file.path(app_dir, "main.js")
+  expect_true(file.exists(main_js_path))
+  
+  main_content <- paste(readLines(main_js_path), collapse = "\n")
+  
+  # Should have required Electron modules
+  expect_true(grepl('require\\("electron"\\)', main_content))
+  expect_true(grepl("BrowserWindow", main_content))
+  
+  # Should reference R components
+  expect_true(grepl("R.framework", main_content))
+  expect_true(grepl("R_HOME", main_content))
+  
+  # Should have Shiny URL
+  expect_true(grepl("SHINY_PORT", main_content))
+  expect_true(grepl("127.0.0.1", main_content))
+  
+  # Should handle app lifecycle
+  expect_true(grepl("app.whenReady", main_content))
+  expect_true(grepl("window-all-closed", main_content))
+})
+
+test_that("rebrand_electron_app updates Info.plist correctly", {
+  app_bundle_path <- file.path(tempdir(), "TestRebrand.app")
+  contents_dir <- file.path(app_bundle_path, "Contents")
+  macos_dir <- file.path(contents_dir, "MacOS")
+  dir.create(macos_dir, recursive = TRUE)
+  on.exit(unlink(app_bundle_path, recursive = TRUE))
+  
+  # Create a mock Info.plist
+  plist_content <- '<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.electron.electron</string>
+  <key>CFBundleName</key>
+  <string>Electron</string>
+  <key>CFBundleExecutable</key>
+  <string>Electron</string>
+</dict>
+</plist>'
+  writeLines(plist_content, file.path(contents_dir, "Info.plist"))
+  
+  # Create mock executable
+  writeLines("#!/bin/bash\necho 'Hello'", file.path(macos_dir, "Electron"))
+  
+  rebrand_electron_app(app_bundle_path, "MyShinyApp")
+  
+  # Check Info.plist was updated
+  new_plist <- paste(readLines(file.path(contents_dir, "Info.plist")), collapse = "\n")
+  expect_true(grepl("com.portr.myshinyapp", new_plist))
+  expect_true(grepl("MyShinyApp", new_plist))
+  expect_false(grepl("com.electron.electron", new_plist))
+  
+  # Check executable was renamed
+  expect_true(file.exists(file.path(macos_dir, "MyShinyApp")))
+  expect_false(file.exists(file.path(macos_dir, "Electron")))
+})
+
+test_that("copy_app_files_electron copies files to correct location", {
+  # Create source project
+  project_path <- file.path(tempdir(), "test_electron_project")
+  dir.create(project_path, recursive = TRUE)
+  writeLines("library(shiny)\nshinyApp(ui, server)", file.path(project_path, "app.R"))
+  dir.create(file.path(project_path, "www"))
+  writeLines("body { color: red; }", file.path(project_path, "www", "style.css"))
+  dir.create(file.path(project_path, "data"))
+  writeLines("1,2,3", file.path(project_path, "data", "test.csv"))
+  
+  # Create app bundle structure
+  app_bundle_path <- file.path(tempdir(), "TestCopy.app")
+  resources_dir <- file.path(app_bundle_path, "Contents", "Resources")
+  dir.create(resources_dir, recursive = TRUE)
+  
+  on.exit({
+    unlink(project_path, recursive = TRUE)
+    unlink(app_bundle_path, recursive = TRUE)
+  })
+  
+  copy_app_files_electron(project_path, app_bundle_path, "app.R", c("data"))
+  
+  shiny_app_dir <- file.path(resources_dir, "shiny_app")
+  
+  # Check files were copied
+  expect_true(file.exists(file.path(shiny_app_dir, "app.R")))
+  expect_true(file.exists(file.path(shiny_app_dir, "www", "style.css")))
+  expect_true(file.exists(file.path(shiny_app_dir, "data", "test.csv")))
+})
+
+test_that("fix_r_framework_paths_electron handles missing directories gracefully", {
+  temp_dir <- file.path(tempdir(), "test_fix_paths")
+  dir.create(temp_dir, recursive = TRUE)
+  on.exit(unlink(temp_dir, recursive = TRUE))
+  
+  # Should warn but not error when directories are missing
+  expect_warning(
+    result <- fix_r_framework_paths_electron(temp_dir),
+    "Versions"
+  )
+  expect_false(result)
+})
+
