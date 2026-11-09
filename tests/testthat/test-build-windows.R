@@ -3,6 +3,14 @@ test_that("get_r_download_url returns correct Windows URL", {
   expect_equal(url, "https://cran.r-project.org/bin/windows/base/R-4.5.2-win.exe")
 })
 
+test_that("get_r_download_url_candidates includes Windows archive fallback", {
+  urls <- get_r_download_url_candidates("4.5.2", "windows")
+
+  expect_equal(length(urls), 2)
+  expect_equal(urls[1], "https://cran.r-project.org/bin/windows/base/R-4.5.2-win.exe")
+  expect_equal(urls[2], "https://cran.r-project.org/bin/windows/base/old/4.5.2/R-4.5.2-win.exe")
+})
+
 test_that("get_cran_binary_repo returns correct Windows repo URL", {
   url <- get_cran_binary_repo("4.5", "windows")
   expect_equal(url, "https://cran.r-project.org/bin/windows/contrib/4.5")

@@ -165,6 +165,35 @@ get_r_download_url <- function(version, target = c("windows", "mac")) {
   }
 }
 
+#' Get candidate R download URLs
+#'
+#' Returns one or more candidate URLs for downloading R installers.
+#' On Windows, older patch releases may be moved to /old/<version>/,
+#' so this helper returns both primary and archive locations.
+#'
+#' @param version R version string (e.g., "4.5.2")
+#' @param target Target platform
+#' @return Character vector of candidate URL(s)
+#' @keywords internal
+get_r_download_url_candidates <- function(version, target = c("windows", "mac")) {
+  target <- match.arg(target)
+
+  primary_url <- get_r_download_url(version, target)
+  if (target != "windows") {
+    return(primary_url)
+  }
+
+  archive_url <- paste0(
+    "https://cran.r-project.org/bin/windows/base/old/",
+    version,
+    "/R-",
+    version,
+    "-win.exe"
+  )
+
+  unique(c(primary_url, archive_url))
+}
+
 #' Get CRAN binary repository URL
 #'
 #' @param r_version R major.minor version (e.g., "4.5")

@@ -116,12 +116,41 @@ build_windows <- function(project_path,
 
     # Step 5: Download R for Windows
     message("\n=== Step 5: Downloading R for Windows ===")
-    r_url <- get_r_download_url(r_version, "windows")
-    r_exe_name <- basename(r_url)
+    r_urls <- get_r_download_url_candidates(r_version, "windows")
+    r_exe_name <- paste0("R-", r_version, "-win.exe")
     r_exe_path <- file.path(dist_dir, r_exe_name)
 
-    message("Downloading from: ", r_url)
-    download.file(r_url, r_exe_path, mode = "wb", quiet = FALSE)
+    download_ok <- FALSE
+    r_url <- NA_character_
+    for (candidate_url in r_urls) {
+      message("Attempting download from: ", candidate_url)
+      attempt <- tryCatch({
+        download.file(candidate_url, r_exe_path, mode = "wb", quiet = FALSE)
+        NULL
+      }, error = function(e) e)
+
+      if (is.null(attempt)) {
+        download_ok <- TRUE
+        r_url <- candidate_url
+        break
+      }
+
+      message("Download failed from: ", candidate_url)
+      message("Reason: ", conditionMessage(attempt))
+      if (file.exists(r_exe_path)) {
+        unlink(r_exe_path)
+      }
+    }
+
+    if (!download_ok) {
+      stop(
+        "Could not download R installer. Tried: ",
+        paste(r_urls, collapse = ", "),
+        call. = FALSE
+      )
+    }
+
+    message("Downloaded from: ", r_url)
 
     # Step 6: Extract R
     message("\n=== Step 6: Extracting R ===")
