@@ -6,10 +6,15 @@ Build portable R application distributions that run without requiring R installa
 
 `portR` creates self-contained distributions of R Shiny applications for:
 
-- **Windows**: Includes R runtime, packages, and a `.bat` launcher
-- **macOS**: Includes R framework, packages, and shell script launchers
+- **Windows**: Currently deployed as a portable folder with R framework, packages, and batch script launchers
+- **macOS**: Can create either an installable macOS application bundle (.app) or a portable folder similar to the Windows version. Additionally, an Electron-based wrapper is available to create standalone shiny apps on macOS. 
 
-The distributions can be run from USB drives, network shares, or any location without administrative privileges.
+Although other tools exist of local R deployement ([`RInno`](https://github.com/ficonsulting/RInno) for Windows, [`DesktopDeployR`](https://github.com/wleepang/DesktopDeployR), and [`electricShine`](https://github.com/chasemc/electricShine)), they are not actively maintained. `portR` has the following additional features:
+
+- Cross-platform support (build Windows and macOS distributions),
+- Uses **renv** for dependency management,
+- Creation of macOS application bundles (.app) for native user experience and easier security permission management,
+- Supports Electron-based app wrapper (currently experimental, macOS only).
 
 ## Installation
 
@@ -29,6 +34,14 @@ already set up to use **renv**, then this section can be skipped. Otherwise:
 renv::init()
 renv::snapshot()
 ```
+
+Some general guidelines for setting up your project with renv:
+
+- Ensure all required packages are installed and recorded in `renv.lock`
+- Only record packages that are necessary for your application, i.e., avoid including packages used only for development or testing (to minimize distribution size)
+- Carefully organise your project structure such that there is a single clear entry point script (e.g., `app.R`), 
+  and any additional resources (data files, models, etc.) are located in subdirectories
+- Use relative paths within your project for any data files or resources (e.g., `data/mydata.csv` instead of absolute paths like `/Users/username/project/data/mydata.csv`)
 
 ### System Requirements
 
@@ -95,7 +108,7 @@ build_mac(
   r_version = "4.5.2",
   arch = "arm64",  # or "x86_64"
   extra_dirs = c("models", "data"),
-  create_zip = TRUE,
+  create_dmg = TRUE,  # Create DMG for distribution
   app_name = "MyShinyApp",
   make_app = TRUE  # Default
 )
@@ -104,8 +117,23 @@ build_mac(
 build_mac(
   project_path = "path/to/your/project",
   entry_script = "app.R",
-  make_app = FALSE
+  make_app = FALSE,
+  create_zip = TRUE  # Zip only for portable folder mode
 )
+
+### Experimental: Electron wrapper (macOS) ⚠️
+
+The project includes an experimental Electron-based app wrapper for macOS that launches your Shiny app in a native window (no Terminal or browser required).
+
+```r
+# Create a macOS app bundle using the experimental Electron wrapper
+build_mac(
+  project_path = "path/to/your/project",
+  entry_script = "app.R",
+  app_name = "MyShinyApp",
+  use_electron = TRUE  # Experimental
+)
+```
 ```
 
 ## Function Arguments
@@ -121,8 +149,6 @@ build_mac(
 | `r_version_minor` | R major.minor for package repo | Derived from `r_version` |
 | `fallback_r_version` | Fallback if primary repo unavailable | `"4.4"` |
 | `extra_dirs` | Additional directories to include | `NULL` |
-| `create_zip` | Create zip archive | `FALSE` |
-| `zip_name` | Name of zip file | Platform-specific |
 | `shiny_command` | R command to run app | `"shiny::runApp('app', launch.browser=TRUE)"` |
 | `clean_on_error` | Clean up on build failure | `TRUE` |
 
@@ -130,9 +156,13 @@ build_mac(
 
 | Argument | Description | Default |
 |----------|-------------|---------|
-| `app_name` | Name of the macOS application bundle | `"ShinyApp"` |
-| `make_app` | Create macOS app bundle (TRUE) or portable folder (FALSE) | `TRUE` |
 | `app_name` | Name of the macOS application bundle (without .app) | `"ShinyApp"` |
+| `make_app` | Create macOS app bundle (TRUE) or portable folder (FALSE) | `TRUE` |
+| `use_electron` | Use Electron wrapper (experimental) | `FALSE` |
+| `create_dmg` | Create DMG disk image (app bundle mode only) | `FALSE` |
+| `dmg_name` | Name of DMG file | `"{app_name}.dmg"` |
+| `create_zip` | Create zip archive (portable folder mode only) | `FALSE` |
+| `zip_name` | Name of zip file | `"portable_app_macos.zip"` |
 
 ## Output Structure
 
@@ -212,6 +242,41 @@ renv::snapshot()
 ```
 
 2. Then re-run the `build_mac()` command. If the problem persists, wait a short time (CRAN mirrors and PACKAGES metadata may be temporarily out of sync) or pin the package version in `renv.lock`.
+
+### "App is damaged and can't be opened" (macOS)
+
+When distributing DMG files via the web, macOS adds a quarantine attribute that triggers Gatekeeper warnings. Users may see "App is damaged" or "can't be opened because Apple cannot check it for malicious software."
+
+**For users downloading the app:**
+
+Option 1 - Right-click to open:
+1. Right-click (or Control-click) the app
+2. Select "Open" from the context menu
+3. Click "Open" in the dialog
+
+Option 2 - Remove quarantine attribute:
+```bash
+xattr -dr com.apple.quarantine ~/Downloads/YourApp.dmg
+# Or after mounting:
+xattr -dr com.apple.quarantine /Volumes/YourApp/YourApp.app
+```
+
+**For developers distributing the app:**
+
+The proper solution is to code sign and notarize your app with an Apple Developer ID ($99/year). This is beyond the scope of portR, but you can sign the app after building:
+
+```bash
+# Sign the app (requires Apple Developer ID)
+codesign --force --deep --sign "Developer ID Application: Your Name" YourApp.app
+
+# Create a signed DMG
+hdiutil create -volname "YourApp" -srcfolder YourApp.app -ov -format UDZO YourApp.dmg
+codesign --sign "Developer ID Application: Your Name" YourApp.dmg
+
+# Notarize (recommended for distribution)
+xcrun notarytool submit YourApp.dmg --apple-id your@email.com --team-id TEAMID --wait
+xcrun stapler staple YourApp.dmg
+```
 
 ## License
 

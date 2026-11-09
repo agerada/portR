@@ -373,3 +373,45 @@ test_that("fix_r_framework_paths_electron handles missing directories gracefully
   expect_false(result)
 })
 
+test_that("create_dmg_archive creates valid DMG", {
+  skip_on_os("windows")
+  skip_on_os("linux")
+  
+  # Create a mock app bundle
+  dist_dir <- file.path(tempdir(), "test_dmg_dist")
+  app_name <- "TestDMGApp"
+  app_bundle <- file.path(dist_dir, paste0(app_name, ".app"))
+  contents_dir <- file.path(app_bundle, "Contents")
+  macos_dir <- file.path(contents_dir, "MacOS")
+  
+  dir.create(macos_dir, recursive = TRUE)
+  writeLines("#!/bin/bash\necho hello", file.path(macos_dir, app_name))
+  writeLines('<?xml version="1.0"?><plist></plist>', file.path(contents_dir, "Info.plist"))
+  
+  on.exit(unlink(dist_dir, recursive = TRUE))
+  
+  # Create DMG
+  dmg_path <- create_dmg_archive(dist_dir, app_name, "TestDMGApp.dmg")
+  
+  expect_true(file.exists(dmg_path))
+  expect_true(file.info(dmg_path)$size > 0)
+  expect_match(dmg_path, "\\.dmg$")
+  
+  # Clean up DMG
+  unlink(dmg_path)
+})
+
+test_that("create_dmg_archive fails gracefully for missing app", {
+  skip_on_os("windows")
+  skip_on_os("linux")
+  
+  temp_dir <- file.path(tempdir(), "test_dmg_missing")
+  dir.create(temp_dir, recursive = TRUE)
+  on.exit(unlink(temp_dir, recursive = TRUE))
+  
+  expect_error(
+    create_dmg_archive(temp_dir, "NonExistent", "test.dmg"),
+    "App bundle not found"
+  )
+})
+

@@ -249,3 +249,74 @@ parent_dir <- dirname(dist_dir)
   message("Created archive: ", file.path(parent_dir, output_zip))
   invisible(file.path(parent_dir, output_zip))
 }
+
+#' Create a DMG disk image of a macOS app bundle
+#'
+#' Creates a DMG (Apple Disk Image) containing the app bundle.
+#' DMG preserves symlinks, permissions, and resource forks properly,
+#' making it the preferred distribution format for macOS applications.
+#'
+#' @param dist_dir Path to distribution directory containing the .app bundle
+#' @param app_name Name of the app (without .app extension)
+#' @param output_dmg Name of the output DMG file
+#' @return Invisible path to DMG file
+#' @keywords internal
+create_dmg_archive <- function(dist_dir, app_name, output_dmg) {
+  if (!nzchar(Sys.which("hdiutil"))) {
+    stop("'hdiutil' command not found. Cannot create DMG.", call. = FALSE)
+ }
+  
+  app_bundle <- file.path(dist_dir, paste0(app_name, ".app"))
+  if (!dir.exists(app_bundle)) {
+    stop("App bundle not found: ", app_bundle, call. = FALSE)
+  }
+  
+  # Output DMG path
+  dmg_path <- file.path(dist_dir, output_dmg)
+  
+  # Remove existing DMG if present
+  if (file.exists(dmg_path)) {
+    unlink(dmg_path)
+  }
+  
+  # Create a temporary directory for the DMG source
+  temp_dmg_source <- tempfile("dmg_source_")
+  dir.create(temp_dmg_source)
+  on.exit(unlink(temp_dmg_source, recursive = TRUE), add = TRUE)
+  
+  # Copy app bundle to temp directory using cp -R to preserve symlinks
+  message("Preparing DMG contents...")
+  system2("cp", args = c("-R", shQuote(app_bundle), shQuote(temp_dmg_source)),
+          stdout = FALSE, stderr = FALSE)
+  
+  # Create the DMG using hdiutil
+  message("Creating DMG: ", output_dmg)
+  
+  # Use hdiutil create with UDZO compression (zlib, good compatibility)
+  result <- system2("hdiutil", 
+                    args = c("create", 
+                             "-volname", shQuote(app_name),
+                             "-srcfolder", shQuote(temp_dmg_source),
+                             "-ov",  # Overwrite if exists
+                             "-format", "UDZO",  # Compressed
+                             shQuote(dmg_path)),
+                    stdout = TRUE, stderr = TRUE)
+  
+  status <- attr(result, "status")
+  if (!is.null(status) && status != 0) {
+    stop("Failed to create DMG: ", paste(result, collapse = "\n"), call. = FALSE)
+  }
+  
+  if (!file.exists(dmg_path)) {
+    stop("DMG was not created", call. = FALSE)
+  }
+  
+  dmg_size <- file.info(dmg_path)$size / (1024 * 1024)
+  message("Created DMG: ", dmg_path, " (", round(dmg_size, 1), " MB)")
+  message("")
+ message("Note: The DMG is not code signed. Users downloading from the web may need to:")
+  message("  - Right-click the app and select 'Open', or")
+  message("  - Run: xattr -dr com.apple.quarantine /path/to/", output_dmg)
+  message("See README for code signing instructions.")
+  invisible(dmg_path)
+}

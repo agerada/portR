@@ -13,6 +13,8 @@ build_mac(
   fallback_r_version = "4.4",
   arch = NULL,
   extra_dirs = NULL,
+  create_dmg = FALSE,
+  dmg_name = NULL,
   create_zip = FALSE,
   zip_name = "portable_app_macos.zip",
   shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
@@ -47,7 +49,14 @@ system architecture.}
 \item{extra_dirs}{Additional directories to include in the distribution
 (e.g., c("models", "data")).}
 
-\item{create_zip}{Whether to create a zip archive of the distribution.}
+\item{create_dmg}{Whether to create a DMG disk image of the app bundle.
+Only applies when make_app = TRUE. DMG preserves symlinks and permissions
+better than zip for macOS app bundles. Defaults to FALSE.}
+
+\item{dmg_name}{Name of the DMG file (without path). Defaults to app_name.dmg.}
+
+\item{create_zip}{Whether to create a zip archive. Only applies when
+make_app = FALSE (portable folder mode). Defaults to FALSE.}
 
 \item{zip_name}{Name of the zip file (without path). Defaults to
 "portable_app_macos.zip".}

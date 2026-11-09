@@ -20,7 +20,12 @@
 #'   system architecture.
 #' @param extra_dirs Additional directories to include in the distribution
 #'   (e.g., c("models", "data")).
-#' @param create_zip Whether to create a zip archive of the distribution.
+#' @param create_dmg Whether to create a DMG disk image of the app bundle.
+#'   Only applies when make_app = TRUE. DMG preserves symlinks and permissions
+#'   better than zip for macOS app bundles. Defaults to FALSE.
+#' @param dmg_name Name of the DMG file (without path). Defaults to app_name.dmg.
+#' @param create_zip Whether to create a zip archive. Only applies when
+#'   make_app = FALSE (portable folder mode). Defaults to FALSE.
 #' @param zip_name Name of the zip file (without path). Defaults to
 #'   "portable_app_macos.zip".
 #' @param shiny_command R command to run the Shiny app. Defaults to
@@ -99,6 +104,8 @@ build_mac <- function(project_path,
                       fallback_r_version = "4.4",
                       arch = NULL,
                       extra_dirs = NULL,
+                      create_dmg = FALSE,
+                      dmg_name = NULL,
                       create_zip = FALSE,
                       zip_name = "portable_app_macos.zip",
                       shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
@@ -243,8 +250,12 @@ build_mac <- function(project_path,
       create_mac_launcher(dist_dir, entry_script, shiny_command)
     }
 
-    # Step 9: Create zip if requested
-    if (create_zip) {
+    # Step 9: Create archive if requested
+    if (make_app && create_dmg) {
+      message("\n=== Step 9: Creating DMG disk image ===")
+      final_dmg_name <- if (is.null(dmg_name)) paste0(app_name, ".dmg") else dmg_name
+      create_dmg_archive(dist_dir, app_name, final_dmg_name)
+    } else if (!make_app && create_zip) {
       message("\n=== Step 9: Creating zip archive ===")
       create_zip_archive(dist_dir, zip_name)
     }
