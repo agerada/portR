@@ -14,7 +14,7 @@ The distributions can be run from USB drives, network shares, or any location wi
 ## Installation
 
 ```r
-devtools::install_github("username/portR")
+remotes::install_github("agerada/portR")
 ```
 
 ## Requirements
