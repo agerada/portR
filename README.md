@@ -32,7 +32,16 @@ already set up to use **renv**, then this section can be skipped. Otherwise:
 ```r
 # In your project
 renv::init()
-renv::snapshot()
+```
+
+Then, snapshot the state of your project to `renv.lock`.
+`portR` will use the lock file to determine which packages need
+to be packed into the portable distribution.
+Use `type = "all"` to ensure all packages are included in the snapshot
+(including local packages).
+
+```r
+renv::snapshot(type = "all")
 ```
 
 Some general guidelines for setting up your project with renv:
