@@ -112,7 +112,8 @@ setup_dist_directory <- function(dist_dir, target = c("windows", "mac")) {
 #'
 #' @param project_path Path to project root
 #' @param dist_dir Path to distribution directory
-#' @param entry_script Relative path to entry script from project root
+#' @param entry_script Relative path to entry script from project root.
+#'   If NULL or empty, entry script copy is skipped.
 #' @param extra_dirs Additional directories to copy
 #' @return Invisible TRUE
 #' @keywords internal
@@ -120,11 +121,13 @@ copy_app_files <- function(project_path, dist_dir, entry_script,
                            extra_dirs = NULL) {
   # Copy entry script
 
-  entry_src <- file.path(project_path, entry_script)
-  if (!file.exists(entry_src)) {
-    stop("Entry script not found: ", entry_src, call. = FALSE)
+  if (!is.null(entry_script) && nzchar(entry_script)) {
+    entry_src <- file.path(project_path, entry_script)
+    if (!file.exists(entry_src)) {
+      stop("Entry script not found: ", entry_src, call. = FALSE)
+    }
+    file.copy(entry_src, dist_dir)
   }
-  file.copy(entry_src, dist_dir)
 
   # Copy app folder if exists
   app_dir <- file.path(project_path, "app")

@@ -78,3 +78,15 @@ test_that("build_windows validates renv", {
     "renv"
   )
 })
+
+test_that("build_windows accepts NULL entry_script", {
+  temp_dir <- file.path(tempdir(), "test_build_null_entry")
+  dir.create(temp_dir, recursive = TRUE)
+  writeLines("# app", file.path(temp_dir, "run.R"))
+  on.exit(unlink(temp_dir, recursive = TRUE))
+
+  expect_error(
+    build_windows(temp_dir, entry_script = NULL, clean_on_error = FALSE),
+    "renv"
+  )
+})

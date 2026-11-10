@@ -120,3 +120,20 @@ test_that("copy_app_files errors on missing entry script", {
     "Entry script not found"
   )
 })
+
+test_that("copy_app_files allows NULL entry script", {
+  src_dir <- file.path(tempdir(), "test_src_null_entry")
+  dist_dir <- file.path(tempdir(), "test_dist_null_entry")
+  dir.create(file.path(src_dir, "app"), recursive = TRUE)
+  dir.create(dist_dir, recursive = TRUE)
+  on.exit({
+    unlink(src_dir, recursive = TRUE)
+    unlink(dist_dir, recursive = TRUE)
+  })
+
+  writeLines("# UI", file.path(src_dir, "app", "ui.R"))
+
+  expect_no_error(copy_app_files(src_dir, dist_dir, NULL))
+  expect_true(dir.exists(file.path(dist_dir, "app")))
+  expect_true(file.exists(file.path(dist_dir, "app", "ui.R")))
+})

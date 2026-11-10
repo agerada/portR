@@ -7,7 +7,8 @@
 #' @param project_path Path to the project root directory. Must contain a
 #'   valid renv.lock file.
 #' @param entry_script Relative path to the entry script from project root
-#'   (e.g., "app.R" or "run.R").
+#'   (e.g., "app.R" or "run.R"). Can be NULL for package-style apps when
+#'   `shiny_command` does not require a script file.
 #' @param output_dir Directory where the distribution will be created.
 #'   Defaults to "dist" in the project root.
 #' @param r_version Target R version for Windows (e.g., "4.5.2").
@@ -58,7 +59,7 @@
 #' )
 #' }
 build_windows <- function(project_path,
-                          entry_script,
+                          entry_script = NULL,
                           output_dir = NULL,
                           r_version = "4.5.2",
                           r_version_minor = NULL,
