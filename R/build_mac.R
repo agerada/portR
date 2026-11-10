@@ -194,6 +194,11 @@ build_mac <- function(project_path,
     r_pkg_name <- basename(r_url)
     r_pkg_path <- file.path(dist_dir, r_pkg_name)
 
+    message("Checking availability: ", r_url)
+    if (!is_url_reachable(r_url)) {
+      stop("R installer URL is not available: ", r_url, call. = FALSE)
+    }
+
     message("Downloading from: ", r_url)
     download.file(r_url, r_pkg_path, mode = "wb", quiet = FALSE)
 

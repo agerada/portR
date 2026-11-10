@@ -123,7 +123,13 @@ build_windows <- function(project_path,
     download_ok <- FALSE
     r_url <- NA_character_
     for (candidate_url in r_urls) {
-      message("Attempting download from: ", candidate_url)
+      message("Checking availability: ", candidate_url)
+      if (!is_url_reachable(candidate_url)) {
+        message("Not available: ", candidate_url)
+        next
+      }
+
+      message("Downloading from: ", candidate_url)
       attempt <- tryCatch({
         download.file(candidate_url, r_exe_path, mode = "wb", quiet = FALSE)
         NULL

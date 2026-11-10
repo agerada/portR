@@ -194,6 +194,36 @@ get_r_download_url_candidates <- function(version, target = c("windows", "mac"))
   unique(c(primary_url, archive_url))
 }
 
+#' Check whether a URL is reachable
+#'
+#' Performs a quiet connection probe to avoid noisy warnings when a URL
+#' is not available (e.g., CRAN moved Windows installers to /old/).
+#'
+#' @param download_url URL to check
+#' @return TRUE if reachable, FALSE otherwise
+#' @keywords internal
+is_url_reachable <- function(download_url) {
+  con <- tryCatch({
+    suppressWarnings(base::url(download_url, open = "rb"))
+  }, error = function(e) {
+    NULL
+  })
+
+  if (is.null(con)) {
+    return(FALSE)
+  }
+
+  on.exit(try(close(con), silent = TRUE), add = TRUE)
+
+  probe <- tryCatch({
+    readBin(con, what = "raw", n = 1)
+  }, error = function(e) {
+    raw(0)
+  })
+
+  length(probe) > 0
+}
+
 #' Get CRAN binary repository URL
 #'
 #' @param r_version R major.minor version (e.g., "4.5")
