@@ -58,6 +58,25 @@ test_that("create_windows_launcher creates batch file", {
   expect_true(any(grepl("@echo off", content)))
   expect_true(any(grepl("R_HOME", content)))
   expect_true(any(grepl("R_LIBS_USER", content)))
+  expect_true(any(grepl("options\\(shiny.launch.browser = TRUE\\)", content)))
+  expect_true(any(grepl("shiny::runApp", content)))
+})
+
+test_that("create_windows_launcher can disable browser auto-open", {
+  dist_dir <- file.path(tempdir(), "test_launcher_no_browser")
+  dir.create(dist_dir, recursive = TRUE)
+  on.exit(unlink(dist_dir, recursive = TRUE))
+
+  result <- create_windows_launcher(
+    dist_dir,
+    "app.R",
+    "shiny::runApp('app')",
+    run_browser = FALSE
+  )
+
+  expect_true(file.exists(result))
+  content <- readLines(result)
+  expect_false(any(grepl("options\\(shiny.launch.browser = TRUE\\)", content)))
   expect_true(any(grepl("shiny::runApp", content)))
 })
 

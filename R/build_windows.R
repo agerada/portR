@@ -23,6 +23,9 @@
 #'   "portable_app_windows.zip".
 #' @param shiny_command R command to run the Shiny app. Defaults to
 #'   "shiny::runApp('app', launch.browser=TRUE)".
+#' @param run_browser Whether to auto-open the app in a browser by prepending
+#'   `options(shiny.launch.browser = TRUE);` to `shiny_command` in the launcher.
+#'   Defaults to TRUE.
 #' @param clean_on_error Whether to clean up on error.
 #'
 #' @return Invisibly returns the path to the distribution directory.
@@ -68,6 +71,7 @@ build_windows <- function(project_path,
                           create_zip = FALSE,
                           zip_name = "portable_app_windows.zip",
                           shiny_command = "shiny::runApp('app', launch.browser=TRUE)",
+                          run_browser = TRUE,
                           clean_on_error = TRUE) {
 
   # Normalize paths
@@ -174,7 +178,7 @@ build_windows <- function(project_path,
 
     # Step 8: Create launcher
     message("\n=== Step 8: Creating launcher script ===")
-    create_windows_launcher(dist_dir, entry_script, shiny_command)
+    create_windows_launcher(dist_dir, entry_script, shiny_command, run_browser)
 
     # Step 9: Create zip if requested
     if (create_zip) {
@@ -400,17 +404,27 @@ download_packages_windows <- function(project_path, dist_dir,
 #' @param dist_dir Distribution directory
 #' @param entry_script Entry script name
 #' @param shiny_command R command to run
+#' @param run_browser Whether to prepend browser auto-launch option
 #' @return Invisible path to batch file
 #' @keywords internal
 create_windows_launcher <- function(dist_dir, entry_script,
-                                     shiny_command) {
+                                     shiny_command,
+                                     run_browser = TRUE) {
+  launch_command <- if (isTRUE(run_browser)) {
+    paste0("options(shiny.launch.browser = TRUE); ", shiny_command)
+  } else {
+    shiny_command
+  }
+
   bat_content <- c(
     "@echo off",
     "SET R_HOME=%~dp0R",
     "SET PATH=%R_HOME%\\bin\\x64;%PATH%",
     "SET R_LIBS_USER=%~dp0library",
     "echo Starting application...",
-    paste0("\"%R_HOME%\\bin\\x64\\Rscript.exe\" -e \"", shiny_command, "\""),
+    "echo Browser should open automatically.",
+    "echo If it does not, open the URL shown as 'Listening on http://...'.",
+    paste0("\"%R_HOME%\\bin\\x64\\Rscript.exe\" -e \"", launch_command, "\""),
     "pause"
   )
 
